@@ -1,373 +1,238 @@
 /**
- * GRIT — LIVE WORKOUT SCREEN (Production)
+ * GRIT — LIVE WORKOUT SCREEN
  *
- * Real timer modes: Stopwatch, AMRAP, EMOM, For Time, Tabata.
- * Configurable before start. Haptic feedback. Rep counter.
- * NO mock data.
+ * Design principle: ZERO INTERACTION DURING EFFORT.
+ *
+ * Before: pick mode + config (2 taps max)
+ * During: GIANT timer fills the screen. Auto-progression for EMOM/Tabata.
+ *         Color shift for work/rest. Haptic does the talking.
+ *         ONE optional tap: log a rep (big zone, bottom half of screen)
+ * After:  auto-save.
+ *
+ * The athlete should be able to GLANCE at their phone from 2 meters away
+ * and know exactly where they are.
  */
 
 import React, { useState, useCallback, useMemo } from "react";
-import { View, Text, TouchableOpacity, ScrollView, Alert, StyleSheet } from "react-native";
+import { View, Text, TouchableOpacity, ScrollView, Alert, StyleSheet, Dimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { colors, fonts, spacing } from "../design/tokens";
-import { IconPause, IconStop, IconTimer, IconArrowRight, IconFire } from "../components/Icons";
+import { IconArrowRight } from "../components/Icons";
 import { useTimer } from "../hooks/useTimer";
 import { useActiveWorkoutStore } from "../stores/useActiveWorkoutStore";
 import { useWorkoutHistoryStore } from "../stores/useWorkoutHistoryStore";
-import { formatTime, formatTimePrecise } from "../utils/formatters";
+import { formatTime } from "../utils/formatters";
 import { hapticService } from "../services/haptics/hapticService";
 import type { TimerMode, TimerConfig, WodSession } from "../types/workout";
 
-type WodPhase = "config" | "active" | "paused" | "finished";
+const { height: SCREEN_H } = Dimensions.get("window");
 
-const MODE_OPTIONS: { mode: TimerMode; label: string; desc: string }[] = [
-  { mode: "stopwatch", label: "STOPWATCH", desc: "Chronomètre libre" },
-  { mode: "amrap", label: "AMRAP", desc: "Max reps en temps limité" },
-  { mode: "emom", label: "EMOM", desc: "Toutes les X minutes" },
-  { mode: "forTime", label: "FOR TIME", desc: "Le plus vite possible" },
-  { mode: "tabata", label: "TABATA", desc: "Work / Rest alternés" },
-];
+type Phase = "pick" | "active" | "finished";
 
-const DURATION_OPTIONS = [
-  { label: "5 min", value: 300 },
-  { label: "10 min", value: 600 },
-  { label: "15 min", value: 900 },
-  { label: "20 min", value: 1200 },
-];
-
-const EMOM_OPTIONS = [
-  { label: "1 min", value: 60 },
-  { label: "90 sec", value: 90 },
-  { label: "2 min", value: 120 },
-];
-
-const ROUND_OPTIONS = [
-  { label: "5", value: 5 },
-  { label: "8", value: 8 },
-  { label: "10", value: 10 },
-  { label: "12", value: 12 },
+// ─── Quick presets (2 taps to start) ──────────────
+const PRESETS = [
+  { label: "STOPWATCH", desc: "Chronomètre libre", mode: "stopwatch" as TimerMode, config: { mode: "stopwatch" as TimerMode } },
+  { label: "AMRAP 12'", desc: "Max reps en 12 min", mode: "amrap" as TimerMode, config: { mode: "amrap" as TimerMode, durationSec: 720 } },
+  { label: "AMRAP 20'", desc: "Max reps en 20 min", mode: "amrap" as TimerMode, config: { mode: "amrap" as TimerMode, durationSec: 1200 } },
+  { label: "EMOM 10'", desc: "Toutes les minutes × 10", mode: "emom" as TimerMode, config: { mode: "emom" as TimerMode, intervalSec: 60, rounds: 10 } },
+  { label: "EMOM 20'", desc: "Toutes les minutes × 20", mode: "emom" as TimerMode, config: { mode: "emom" as TimerMode, intervalSec: 60, rounds: 20 } },
+  { label: "TABATA", desc: "20s work / 10s rest × 8", mode: "tabata" as TimerMode, config: { mode: "tabata" as TimerMode, workSec: 20, restSec: 10, rounds: 8 } },
+  { label: "FOR TIME", desc: "Le plus vite possible", mode: "forTime" as TimerMode, config: { mode: "forTime" as TimerMode, durationSec: 3600 } },
 ];
 
 export const LiveWorkoutScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
-  const [phase, setPhase] = useState<WodPhase>("config");
+  const [phase, setPhase] = useState<Phase>("pick");
+  const [selectedConfig, setSelectedConfig] = useState<TimerConfig>(PRESETS[0].config);
+  const [selectedLabel, setSelectedLabel] = useState("STOPWATCH");
 
-  // Config state
-  const [selectedMode, setSelectedMode] = useState<TimerMode>("stopwatch");
-  const [duration, setDuration] = useState(600);
-  const [interval, setInterval_] = useState(60);
-  const [rounds, setRounds] = useState(8);
-  const [workSec, setWorkSec] = useState(20);
-  const [restSec, setRestSec] = useState(10);
-
-  // Build timer config
-  const timerConfig = useMemo((): TimerConfig => {
-    switch (selectedMode) {
-      case "amrap": return { mode: "amrap", durationSec: duration };
-      case "emom": return { mode: "emom", intervalSec: interval, rounds };
-      case "forTime": return { mode: "forTime", durationSec: duration };
-      case "tabata": return { mode: "tabata", workSec, restSec, rounds };
-      default: return { mode: "stopwatch" };
-    }
-  }, [selectedMode, duration, interval, rounds, workSec, restSec]);
-
-  const timer = useTimer(timerConfig);
+  const timer = useTimer(selectedConfig);
   const activeWorkout = useActiveWorkoutStore();
   const addSession = useWorkoutHistoryStore((s) => s.addSession);
 
   // ─── Start ──────────────────────────────────────
-  const handleStart = useCallback(async () => {
+  const handleStart = useCallback(async (config: TimerConfig, label: string) => {
+    setSelectedConfig(config);
+    setSelectedLabel(label);
     activeWorkout.startWorkout("wod");
-    timer.start();
     await activateKeepAwakeAsync();
-    hapticService.medium();
+    hapticService.roundComplete();
     setPhase("active");
+    // Timer starts after state update
+    setTimeout(() => timer.start(), 50);
   }, [activeWorkout, timer]);
 
-  // ─── Pause/Resume ───────────────────────────────
-  const handlePauseResume = useCallback(() => {
-    if (phase === "active") {
-      timer.pause();
-      activeWorkout.pauseWorkout();
-      setPhase("paused");
-    } else if (phase === "paused") {
-      timer.resume();
-      activeWorkout.resumeWorkout();
-      setPhase("active");
-    }
-  }, [phase, timer, activeWorkout]);
-
-  // ─── Stop ───────────────────────────────────────
+  // ─── Stop (swipe down or long press) ────────────
   const handleStop = useCallback(() => {
-    Alert.alert("End Workout?", `${timer.display.reps} reps — ${formatTime(timer.display.totalElapsedMs)}`, [
-      { text: "Cancel", style: "cancel" },
+    Alert.alert("END WORKOUT?", `${timer.display.reps} reps — ${formatTime(timer.display.totalElapsedMs)}`, [
+      { text: "CANCEL", style: "cancel" },
       {
-        text: "Save & End",
-        style: "destructive",
+        text: "SAVE",
         onPress: () => {
           const elapsed = timer.stop();
           deactivateKeepAwake();
-
           const session = activeWorkout.completeWorkout();
           if (session) {
-            const wodSession: WodSession = {
-              ...session,
-              type: "wod",
-              totalDurationMs: elapsed,
-              timerMode: selectedMode,
-              timerConfig,
-              rounds: [],
-              totalReps: timer.display.reps,
-            };
-            addSession(wodSession);
+            const wod: WodSession = { ...session, type: "wod", totalDurationMs: elapsed, timerMode: selectedConfig.mode, timerConfig: selectedConfig, rounds: [], totalReps: timer.display.reps };
+            addSession(wod);
           }
-
           hapticService.workoutFinished();
           setPhase("finished");
-          setTimeout(() => {
-            timer.reset();
-            setPhase("config");
-          }, 2000);
+          setTimeout(() => { timer.reset(); setPhase("pick"); }, 2500);
         },
       },
     ]);
-  }, [timer, activeWorkout, addSession, selectedMode, timerConfig]);
+  }, [timer, activeWorkout, addSession, selectedConfig]);
 
-  // ─── Config Screen ──────────────────────────────
-  if (phase === "config") {
+  // ─── PICK SCREEN (before workout) ──────────────
+  if (phase === "pick") {
     return (
-      <ScrollView style={[styles.container, { paddingTop: insets.top + 12 }]} showsVerticalScrollIndicator={false}>
+      <ScrollView style={[styles.container, { paddingTop: insets.top + 16 }]} showsVerticalScrollIndicator={false}>
         <Text style={styles.label}>WORKOUT</Text>
-        <Text style={styles.heroTitle}>CONFIGURE</Text>
+        <Text style={styles.heroTitle}>SELECT{"\n"}MODE</Text>
 
-        {/* Mode Selection */}
-        <Text style={styles.sectionLabel}>MODE</Text>
-        <View style={styles.modeGrid}>
-          {MODE_OPTIONS.map((opt) => (
+        <View style={styles.presetGrid}>
+          {PRESETS.map((p) => (
             <TouchableOpacity
-              key={opt.mode}
-              style={[styles.modeCard, selectedMode === opt.mode && styles.modeCardActive]}
-              onPress={() => { setSelectedMode(opt.mode); hapticService.light(); }}
+              key={p.label}
+              style={styles.presetCard}
+              onPress={() => handleStart(p.config, p.label)}
               activeOpacity={0.7}
             >
-              <Text style={[styles.modeName, selectedMode === opt.mode && { color: colors.neonYellow }]}>{opt.label}</Text>
-              <Text style={styles.modeDesc}>{opt.desc}</Text>
+              <Text style={styles.presetLabel}>{p.label}</Text>
+              <Text style={styles.presetDesc}>{p.desc}</Text>
+              <View style={styles.presetArrow}>
+                <IconArrowRight size={12} color={colors.neonYellow} strokeWidth={2} />
+              </View>
             </TouchableOpacity>
           ))}
         </View>
-
-        {/* Duration (AMRAP / For Time) */}
-        {(selectedMode === "amrap" || selectedMode === "forTime") && (
-          <>
-            <Text style={styles.sectionLabel}>DURÉE</Text>
-            <View style={styles.optionRow}>
-              {DURATION_OPTIONS.map((opt) => (
-                <TouchableOpacity
-                  key={opt.value}
-                  style={[styles.optionChip, duration === opt.value && styles.optionChipActive]}
-                  onPress={() => setDuration(opt.value)}
-                >
-                  <Text style={[styles.optionText, duration === opt.value && { color: colors.neonYellow }]}>{opt.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </>
-        )}
-
-        {/* EMOM interval + rounds */}
-        {selectedMode === "emom" && (
-          <>
-            <Text style={styles.sectionLabel}>INTERVALLE</Text>
-            <View style={styles.optionRow}>
-              {EMOM_OPTIONS.map((opt) => (
-                <TouchableOpacity
-                  key={opt.value}
-                  style={[styles.optionChip, interval === opt.value && styles.optionChipActive]}
-                  onPress={() => setInterval_(opt.value)}
-                >
-                  <Text style={[styles.optionText, interval === opt.value && { color: colors.neonYellow }]}>{opt.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <Text style={styles.sectionLabel}>ROUNDS</Text>
-            <View style={styles.optionRow}>
-              {ROUND_OPTIONS.map((opt) => (
-                <TouchableOpacity
-                  key={opt.value}
-                  style={[styles.optionChip, rounds === opt.value && styles.optionChipActive]}
-                  onPress={() => setRounds(opt.value)}
-                >
-                  <Text style={[styles.optionText, rounds === opt.value && { color: colors.neonYellow }]}>{opt.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </>
-        )}
-
-        {/* Tabata config */}
-        {selectedMode === "tabata" && (
-          <>
-            <Text style={styles.sectionLabel}>WORK / REST</Text>
-            <View style={styles.tabataRow}>
-              <View style={styles.tabataBlock}>
-                <Text style={styles.tabataLabel}>WORK</Text>
-                <Text style={styles.tabataValue}>{workSec}s</Text>
-                <View style={styles.tabataControls}>
-                  <TouchableOpacity onPress={() => setWorkSec(Math.max(5, workSec - 5))} style={styles.tabataBtn}><Text style={styles.tabataBtnText}>-</Text></TouchableOpacity>
-                  <TouchableOpacity onPress={() => setWorkSec(workSec + 5)} style={styles.tabataBtn}><Text style={styles.tabataBtnText}>+</Text></TouchableOpacity>
-                </View>
-              </View>
-              <View style={styles.tabataBlock}>
-                <Text style={styles.tabataLabel}>REST</Text>
-                <Text style={styles.tabataValue}>{restSec}s</Text>
-                <View style={styles.tabataControls}>
-                  <TouchableOpacity onPress={() => setRestSec(Math.max(5, restSec - 5))} style={styles.tabataBtn}><Text style={styles.tabataBtnText}>-</Text></TouchableOpacity>
-                  <TouchableOpacity onPress={() => setRestSec(restSec + 5)} style={styles.tabataBtn}><Text style={styles.tabataBtnText}>+</Text></TouchableOpacity>
-                </View>
-              </View>
-            </View>
-            <Text style={styles.sectionLabel}>ROUNDS</Text>
-            <View style={styles.optionRow}>
-              {ROUND_OPTIONS.map((opt) => (
-                <TouchableOpacity
-                  key={opt.value}
-                  style={[styles.optionChip, rounds === opt.value && styles.optionChipActive]}
-                  onPress={() => setRounds(opt.value)}
-                >
-                  <Text style={[styles.optionText, rounds === opt.value && { color: colors.neonYellow }]}>{opt.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </>
-        )}
-
-        {/* Start Button */}
-        <TouchableOpacity style={styles.startBtn} onPress={handleStart} activeOpacity={0.85}>
-          <Text style={styles.startBtnText}>START {selectedMode.toUpperCase()}</Text>
-          <IconArrowRight size={14} color={colors.black} strokeWidth={2.5} />
-        </TouchableOpacity>
 
         <View style={{ height: 120 }} />
       </ScrollView>
     );
   }
 
-  // ─── Active / Paused / Finished ─────────────────
-  const { display } = timer;
-  const isWork = display.phase === "work";
-  const isRest = display.phase === "rest";
-  const isFinished = display.isFinished || phase === "finished";
+  // ─── FINISHED FLASH ─────────────────────────────
+  if (phase === "finished") {
+    return (
+      <View style={[styles.fullScreen, { paddingTop: insets.top }]}>
+        <Text style={styles.finishedLabel}>WORKOUT{"\n"}COMPLETE</Text>
+        <Text style={styles.finishedTime}>{formatTime(timer.display.totalElapsedMs, true)}</Text>
+        <Text style={styles.finishedReps}>{timer.display.reps} REPS</Text>
+      </View>
+    );
+  }
 
-  const phaseColor = isRest ? "#3B82F6" : isFinished ? colors.success : colors.offWhite;
-  const phaseLabel = isFinished ? "FINISHED" : isRest ? "REST" : phase === "paused" ? "PAUSED" : selectedMode.toUpperCase();
+  // ─── ACTIVE SCREEN (during workout) ─────────────
+  // Design: GIANT timer. Nothing else matters.
+  // Work = white on black. Rest = white on blue. Finished = green.
+  const { display } = timer;
+  const isRest = display.phase === "rest";
+  const isFinished = display.isFinished;
+
+  const bgColor = isFinished ? "#0A2A0A" : isRest ? "#0A1A3A" : colors.black;
+  const timeColor = isFinished ? colors.success : isRest ? "#60A5FA" : colors.offWhite;
+  const phaseText = isFinished ? "DONE" : isRest ? "REST" : display.totalRounds ? `${selectedLabel}` : selectedLabel;
+
+  // Countdown display for AMRAP (shows remaining), others show elapsed
+  const showTime = selectedConfig.mode === "amrap" || selectedConfig.mode === "tabata" || selectedConfig.mode === "emom"
+    ? display.timeMs
+    : display.totalElapsedMs;
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
-      {/* Phase Label */}
-      <View style={styles.topBar}>
-        <Text style={[styles.phaseLabel, { color: isRest ? "#3B82F6" : colors.neonYellow }]}>{phaseLabel}</Text>
+    <View style={[styles.fullScreen, { backgroundColor: bgColor, paddingTop: insets.top }]}>
+
+      {/* Top: mode + round info (tiny, out of the way) */}
+      <View style={styles.activeTop}>
+        <Text style={styles.activeLabel}>{phaseText}</Text>
         {display.totalRounds && (
-          <Text style={styles.roundLabel}>ROUND {display.round}/{display.totalRounds}</Text>
+          <Text style={styles.roundText}>
+            {display.round}<Text style={{ color: colors.ash }}>/{display.totalRounds}</Text>
+          </Text>
         )}
       </View>
 
-      {/* Giant Timer */}
-      <View style={styles.timerBlock}>
-        <Text style={[styles.timerText, { color: phaseColor }]}>
-          {formatTime(display.timeMs)}
+      {/* CENTER: GIANT TIMER (readable from 2m) */}
+      <View style={styles.timerCenter}>
+        <Text style={[styles.giantTime, { color: timeColor }]}>
+          {formatTime(showTime)}
         </Text>
-        {selectedMode !== "stopwatch" && (
-          <Text style={styles.totalTime}>Total: {formatTime(display.totalElapsedMs)}</Text>
+        {selectedConfig.mode !== "stopwatch" && (
+          <Text style={styles.totalSmall}>
+            {formatTime(display.totalElapsedMs)}
+          </Text>
         )}
       </View>
 
-      {/* Rep Counter */}
-      <View style={styles.repSection}>
-        <Text style={styles.repLabel}>REPS</Text>
+      {/* BOTTOM: Rep counter (tap anywhere in bottom half) */}
+      <TouchableOpacity
+        style={styles.repZone}
+        onPress={() => timer.logRep()}
+        activeOpacity={0.9}
+      >
         <Text style={styles.repCount}>{display.reps}</Text>
-        <TouchableOpacity
-          style={styles.repButton}
-          onPress={() => timer.logRep()}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.repButtonText}>+ REP</Text>
-        </TouchableOpacity>
-      </View>
+        <Text style={styles.repLabel}>TAP TO LOG REP</Text>
+      </TouchableOpacity>
 
-      {/* Controls */}
-      {!isFinished && (
-        <View style={styles.controls}>
-          <TouchableOpacity style={styles.pauseBtn} onPress={handlePauseResume}>
-            <IconPause size={22} color={colors.offWhite} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.stopBtn} onPress={handleStop}>
-            <IconStop size={24} color={colors.offWhite} />
-          </TouchableOpacity>
-        </View>
-      )}
+      {/* Stop button (small, corner — not accidental) */}
+      <TouchableOpacity
+        style={[styles.stopCorner, { bottom: insets.bottom + 90 }]}
+        onPress={handleStop}
+        onLongPress={handleStop}
+        activeOpacity={0.7}
+      >
+        <View style={styles.stopDot} />
+      </TouchableOpacity>
 
-      {isFinished && (
-        <View style={styles.finishedBlock}>
-          <IconFire size={32} color={colors.neonYellow} />
-          <Text style={styles.finishedText}>WORKOUT SAVED</Text>
-        </View>
-      )}
+      {/* Pause (small, other corner) */}
+      <TouchableOpacity
+        style={[styles.pauseCorner, { bottom: insets.bottom + 90 }]}
+        onPress={() => timer.isPaused ? timer.resume() : timer.pause()}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.pauseText}>{timer.isPaused ? "▶" : "⏸"}</Text>
+      </TouchableOpacity>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.black, paddingHorizontal: spacing.lg },
-  label: { fontFamily: fonts.bodyBold, fontSize: 11, color: colors.neonYellow, letterSpacing: 3, marginBottom: spacing.xs },
-  heroTitle: { fontFamily: fonts.headline, fontSize: 38, color: colors.offWhite, textTransform: "uppercase", marginBottom: spacing.lg },
 
-  // Mode Selection
-  sectionLabel: { fontFamily: fonts.bodyMedium, fontSize: 9, color: colors.ash, letterSpacing: 4, marginBottom: spacing.sm, marginTop: spacing.md },
-  modeGrid: { gap: 8 },
-  modeCard: { padding: spacing.md, borderRadius: 10, borderWidth: 1, borderColor: colors.graphite, backgroundColor: colors.carbon },
-  modeCardActive: { borderColor: colors.neonYellow, backgroundColor: "rgba(239,255,0,0.05)" },
-  modeName: { fontFamily: fonts.bodyBold, fontSize: 14, color: colors.offWhite, letterSpacing: 2, marginBottom: 4 },
-  modeDesc: { fontFamily: fonts.body, fontSize: 12, color: colors.ash },
+  // Pick screen
+  label: { fontFamily: fonts.bodyBold, fontSize: 11, color: colors.neonYellow, letterSpacing: 4 },
+  heroTitle: { fontFamily: fonts.headline, fontSize: 48, color: colors.offWhite, textTransform: "uppercase", lineHeight: 48, marginTop: spacing.sm, marginBottom: spacing.xl },
 
-  // Options
-  optionRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
-  optionChip: { paddingVertical: 10, paddingHorizontal: 20, borderRadius: 8, borderWidth: 1, borderColor: colors.graphite, backgroundColor: colors.carbon },
-  optionChipActive: { borderColor: colors.neonYellow, backgroundColor: "rgba(239,255,0,0.08)" },
-  optionText: { fontFamily: fonts.bodyBold, fontSize: 13, color: colors.silver },
+  presetGrid: { gap: 8 },
+  presetCard: { flexDirection: "row", alignItems: "center", backgroundColor: colors.carbon, borderRadius: 12, borderWidth: 1, borderColor: colors.graphite, padding: spacing.lg },
+  presetLabel: { fontFamily: fonts.bodyBold, fontSize: 16, color: colors.offWhite, letterSpacing: 2, flex: 1 },
+  presetDesc: { fontFamily: fonts.body, fontSize: 12, color: colors.ash, flex: 1.2 },
+  presetArrow: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: colors.steel, alignItems: "center", justifyContent: "center" },
 
-  // Tabata
-  tabataRow: { flexDirection: "row", gap: spacing.md },
-  tabataBlock: { flex: 1, backgroundColor: colors.carbon, borderRadius: 12, padding: spacing.md, borderWidth: 1, borderColor: colors.graphite, alignItems: "center" },
-  tabataLabel: { fontFamily: fonts.bodyMedium, fontSize: 9, color: colors.ash, letterSpacing: 3, marginBottom: 4 },
-  tabataValue: { fontFamily: fonts.mono, fontSize: 32, fontWeight: "700", color: colors.offWhite, marginBottom: 8 },
-  tabataControls: { flexDirection: "row", gap: 12 },
-  tabataBtn: { width: 36, height: 36, borderRadius: 18, borderWidth: 1, borderColor: colors.steel, alignItems: "center", justifyContent: "center" },
-  tabataBtnText: { fontFamily: fonts.bodyBold, fontSize: 18, color: colors.offWhite },
+  // Active screen
+  fullScreen: { flex: 1, backgroundColor: colors.black },
 
-  // Start
-  startBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.neonYellow, paddingVertical: 20, borderRadius: 12, marginTop: spacing.xxl },
-  startBtnText: { fontFamily: fonts.bodyBold, fontSize: 16, color: colors.black, letterSpacing: 4 },
+  activeTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+  activeLabel: { fontFamily: fonts.bodyBold, fontSize: 12, color: colors.neonYellow, letterSpacing: 4 },
+  roundText: { fontFamily: fonts.mono, fontSize: 20, fontWeight: "700", color: colors.offWhite },
 
-  // Active
-  topBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.xxl },
-  phaseLabel: { fontFamily: fonts.bodyBold, fontSize: 12, letterSpacing: 4 },
-  roundLabel: { fontFamily: fonts.mono, fontSize: 14, fontWeight: "700", color: colors.silver },
+  timerCenter: { flex: 1, alignItems: "center", justifyContent: "center" },
+  giantTime: { fontFamily: fonts.mono, fontSize: 96, fontWeight: "700", letterSpacing: -4 },
+  totalSmall: { fontFamily: fonts.mono, fontSize: 16, color: colors.ash, marginTop: spacing.xs, letterSpacing: 2 },
 
-  timerBlock: { alignItems: "center", marginBottom: spacing.xxl },
-  timerText: { fontFamily: fonts.mono, fontSize: 88, fontWeight: "700", letterSpacing: -4 },
-  totalTime: { fontFamily: fonts.bodyMedium, fontSize: 12, color: colors.ash, letterSpacing: 3, marginTop: spacing.xs },
+  repZone: { height: SCREEN_H * 0.22, alignItems: "center", justifyContent: "center", borderTopWidth: 1, borderTopColor: colors.graphite },
+  repCount: { fontFamily: fonts.mono, fontSize: 64, fontWeight: "700", color: colors.neonYellow },
+  repLabel: { fontFamily: fonts.bodyMedium, fontSize: 10, color: colors.ash, letterSpacing: 4, marginTop: 4 },
 
-  repSection: { alignItems: "center", marginBottom: spacing.xxl },
-  repLabel: { fontFamily: fonts.bodyMedium, fontSize: 9, color: colors.ash, letterSpacing: 4, marginBottom: 4 },
-  repCount: { fontFamily: fonts.mono, fontSize: 48, fontWeight: "700", color: colors.neonYellow, marginBottom: spacing.md },
-  repButton: { backgroundColor: colors.carbon, borderWidth: 2, borderColor: colors.neonYellow, paddingVertical: 20, paddingHorizontal: 64, borderRadius: 16 },
-  repButtonText: { fontFamily: fonts.bodyBold, fontSize: 18, color: colors.neonYellow, letterSpacing: 4 },
+  stopCorner: { position: "absolute", right: spacing.lg, width: 44, height: 44, borderRadius: 22, backgroundColor: "rgba(239,68,68,0.15)", borderWidth: 1, borderColor: "rgba(239,68,68,0.3)", alignItems: "center", justifyContent: "center" },
+  stopDot: { width: 16, height: 16, borderRadius: 3, backgroundColor: colors.danger },
+  pauseCorner: { position: "absolute", left: spacing.lg, width: 44, height: 44, borderRadius: 22, backgroundColor: "rgba(255,255,255,0.05)", borderWidth: 1, borderColor: colors.steel, alignItems: "center", justifyContent: "center" },
+  pauseText: { fontSize: 16, color: colors.offWhite },
 
-  controls: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 32 },
-  pauseBtn: { width: 56, height: 56, borderRadius: 28, borderWidth: 2, borderColor: colors.steel, alignItems: "center", justifyContent: "center" },
-  stopBtn: { width: 72, height: 72, borderRadius: 36, backgroundColor: colors.danger, alignItems: "center", justifyContent: "center" },
-
-  finishedBlock: { alignItems: "center", gap: spacing.md },
-  finishedText: { fontFamily: fonts.bodyBold, fontSize: 14, color: colors.success, letterSpacing: 4 },
+  // Finished
+  finishedLabel: { fontFamily: fonts.headline, fontSize: 48, color: colors.neonYellow, textTransform: "uppercase", textAlign: "center", lineHeight: 50, marginTop: SCREEN_H * 0.25 },
+  finishedTime: { fontFamily: fonts.mono, fontSize: 48, fontWeight: "700", color: colors.offWhite, textAlign: "center", marginTop: spacing.lg },
+  finishedReps: { fontFamily: fonts.bodyBold, fontSize: 16, color: colors.ash, textAlign: "center", letterSpacing: 4, marginTop: spacing.sm },
 });

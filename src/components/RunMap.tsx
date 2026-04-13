@@ -35,21 +35,27 @@ interface RunMapProps {
 }
 
 /**
- * Try to use react-native-maps (Google Maps), fallback to SVG
+ * In Expo Go, react-native-maps is NOT available (needs dev build).
+ * We always use SVG fallback in Expo Go for reliability.
+ * Set USE_NATIVE_MAPS = true when running a dev build.
  */
+const USE_NATIVE_MAPS = false; // Set true only in dev builds
+
 let MapView: any = null;
 let MapPolyline: any = null;
 let MapMarker: any = null;
 let MapCircle: any = null;
 
-try {
-  const Maps = require("react-native-maps");
-  MapView = Maps.default;
-  MapPolyline = Maps.Polyline;
-  MapMarker = Maps.Marker;
-  MapCircle = Maps.Circle;
-} catch {
-  // react-native-maps not available (e.g., Expo Go without dev build)
+if (USE_NATIVE_MAPS) {
+  try {
+    const Maps = require("react-native-maps");
+    MapView = Maps.default;
+    MapPolyline = Maps.Polyline;
+    MapMarker = Maps.Marker;
+    MapCircle = Maps.Circle;
+  } catch {
+    // fallback to SVG
+  }
 }
 
 export const RunMap: React.FC<RunMapProps> = ({
