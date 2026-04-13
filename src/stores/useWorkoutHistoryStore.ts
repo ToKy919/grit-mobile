@@ -1,106 +1,94 @@
 /**
  * GRIT — Workout History Store
- * Persisted with AsyncStorage. All completed sessions.
+ * No persist middleware (incompatible with React 19).
+ * Manual save/load via AsyncStorage.
  */
 
 import { create } from "zustand";
-import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { WorkoutSession, RunSession } from "../types/workout";
 import type { PersonalRecord } from "../types/user";
-import { STORAGE_KEYS } from "../services/persistence/storageService";
+
+const STORAGE_KEY = "@grit/workout_history";
 
 interface WorkoutHistoryState {
   sessions: WorkoutSession[];
   personalRecords: PersonalRecord[];
+  _loaded: boolean;
 
   addSession: (session: WorkoutSession) => void;
   deleteSession: (id: string) => void;
-  getSessionsByType: (type: string) => WorkoutSession[];
+  loadFromStorage: () => Promise<void>;
 }
 
-export const useWorkoutHistoryStore = create<WorkoutHistoryState>()(
-  persist(
-    (set, get) => ({
-      sessions: [],
-      personalRecords: [],
+export const useWorkoutHistoryStore = create<WorkoutHistoryState>()((set, get) => ({
+  sessions: [],
+  personalRecords: [],
+  _loaded: false,
 
-      addSession: (session: WorkoutSession) => {
-        set((state) => {
-          const sessions = [session, ...state.sessions];
-          const personalRecords = [...state.personalRecords];
-
-          // Auto-detect PRs for run sessions
-          if (session.type === "run") {
-            const run = session as RunSession;
-            if (run.totalDistanceM >= 4900 && run.totalDistanceM <= 5200) {
-              // ~5K
-              const existing = personalRecords.find((p) => p.category === "5K RUN");
-              if (!existing || run.totalDurationMs < existing.value) {
-                const pr: PersonalRecord = {
-                  category: "5K RUN",
-                  value: run.totalDurationMs,
-                  unit: "time",
-                  achievedAt: session.startedAt,
-                  sessionId: session.id,
-                };
-                const idx = personalRecords.findIndex((p) => p.category === "5K RUN");
-                if (idx >= 0) personalRecords[idx] = pr;
-                else personalRecords.push(pr);
-              }
-            }
-            if (run.totalDistanceM >= 9800 && run.totalDistanceM <= 10200) {
-              // ~10K
-              const existing = personalRecords.find((p) => p.category === "10K RUN");
-              if (!existing || run.totalDurationMs < existing.value) {
-                const pr: PersonalRecord = {
-                  category: "10K RUN",
-                  value: run.totalDurationMs,
-                  unit: "time",
-                  achievedAt: session.startedAt,
-                  sessionId: session.id,
-                };
-                const idx = personalRecords.findIndex((p) => p.category === "10K RUN");
-                if (idx >= 0) personalRecords[idx] = pr;
-                else personalRecords.push(pr);
-              }
-            }
-          }
-
-          // PR for Hyrox total time
-          if (session.type === "hyrox") {
-            const existing = personalRecords.find((p) => p.category === "HYROX SIM");
-            if (!existing || session.totalDurationMs < existing.value) {
-              const pr: PersonalRecord = {
-                category: "HYROX SIM",
-                value: session.totalDurationMs,
-                unit: "time",
-                achievedAt: session.startedAt,
-                sessionId: session.id,
-              };
-              const idx = personalRecords.findIndex((p) => p.category === "HYROX SIM");
-              if (idx >= 0) personalRecords[idx] = pr;
-              else personalRecords.push(pr);
-            }
-          }
-
-          return { sessions, personalRecords };
+  loadFromStorage: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const data = JSON.parse(raw);
+        set({
+          sessions: data.sessions || [],
+          personalRecords: data.personalRecords || [],
+          _loaded: true,
         });
-      },
-
-      deleteSession: (id: string) => {
-        set((state) => ({
-          sessions: state.sessions.filter((s) => s.id !== id),
-        }));
-      },
-
-      getSessionsByType: (type: string) => {
-        return get().sessions.filter((s) => s.type === type);
-      },
-    }),
-    {
-      name: STORAGE_KEYS.WORKOUT_HISTORY,
-      storage: createJSONStorage(() => AsyncStorage),
+      } else {
+        set({ _loaded: true });
+      }
+    } catch (e) {
+      console.warn("[History] Failed to load:", e);
+      set({ _loaded: true });
     }
-  )
-);
+  },
+
+  addSession: (session: WorkoutSession) => {
+    const state = get();
+    const sessions = [session, ...state.sessions];
+    const personalRecords = [...state.personalRecords];
+
+    // Auto-detect PRs for run sessions
+    if (session.type === "run") {
+      const run = session as RunSession;
+      const checkPR = (category: string, minDist: number, maxDist: number) => {
+        if (run.totalDistanceM >= minDist && run.totalDistanceM <= maxDist) {
+          const existing = personalRecords.find((p) => p.category === category);
+          if (!existing || run.totalDurationMs < existing.value) {
+            const pr: PersonalRecord = { category, value: run.totalDurationMs, unit: "time", achievedAt: session.startedAt, sessionId: session.id };
+            const idx = personalRecords.findIndex((p) => p.category === category);
+            if (idx >= 0) personalRecords[idx] = pr;
+            else personalRecords.push(pr);
+          }
+        }
+      };
+      checkPR("5K RUN", 4900, 5200);
+      checkPR("10K RUN", 9800, 10200);
+    }
+
+    if (session.type === "hyrox") {
+      const existing = personalRecords.find((p) => p.category === "HYROX SIM");
+      if (!existing || session.totalDurationMs < existing.value) {
+        const pr: PersonalRecord = { category: "HYROX SIM", value: session.totalDurationMs, unit: "time", achievedAt: session.startedAt, sessionId: session.id };
+        const idx = personalRecords.findIndex((p) => p.category === "HYROX SIM");
+        if (idx >= 0) personalRecords[idx] = pr;
+        else personalRecords.push(pr);
+      }
+    }
+
+    set({ sessions, personalRecords });
+
+    // Persist async (fire and forget)
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ sessions, personalRecords })).catch((e) =>
+      console.warn("[History] Failed to save:", e)
+    );
+  },
+
+  deleteSession: (id: string) => {
+    const sessions = get().sessions.filter((s) => s.id !== id);
+    set({ sessions });
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ sessions, personalRecords: get().personalRecords })).catch(() => {});
+  },
+}));

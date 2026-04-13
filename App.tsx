@@ -3,9 +3,10 @@
  * Premium training app for hybrid athletes
  */
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { StatusBar } from "expo-status-bar";
 import { View, StyleSheet, ActivityIndicator } from "react-native";
+import { useWorkoutHistoryStore } from "./src/stores/useWorkoutHistoryStore";
 import { useFonts, PlayfairDisplay_700Bold, PlayfairDisplay_900Black } from "@expo-google-fonts/playfair-display";
 import { Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from "@expo-google-fonts/inter";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -20,6 +21,11 @@ import { VideoStudioScreen } from "./src/screens/VideoStudioScreen";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState(0);
+
+  // Load persisted data on startup
+  useEffect(() => {
+    useWorkoutHistoryStore.getState().loadFromStorage();
+  }, []);
 
   const [fontsLoaded] = useFonts({
     PlayfairDisplay_700Bold,

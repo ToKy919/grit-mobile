@@ -1,10 +1,9 @@
 /**
  * GRIT — App Settings Store
+ * No persist middleware (React 19 compat).
  */
 
 import { create } from "zustand";
-import { persist, createJSONStorage } from "zustand/middleware";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { AppSettings } from "../types/user";
 import { DEFAULT_SETTINGS } from "../types/user";
 
@@ -13,22 +12,14 @@ interface AppSettingsState extends AppSettings {
   resetSettings: () => void;
 }
 
-export const useAppSettingsStore = create<AppSettingsState>()(
-  persist(
-    (set) => ({
-      ...DEFAULT_SETTINGS,
+export const useAppSettingsStore = create<AppSettingsState>()((set) => ({
+  ...DEFAULT_SETTINGS,
 
-      updateSetting: (key, value) => {
-        set({ [key]: value });
-      },
+  updateSetting: (key, value) => {
+    set({ [key]: value });
+  },
 
-      resetSettings: () => {
-        set(DEFAULT_SETTINGS);
-      },
-    }),
-    {
-      name: "@grit/app_settings",
-      storage: createJSONStorage(() => AsyncStorage),
-    }
-  )
-);
+  resetSettings: () => {
+    set(DEFAULT_SETTINGS);
+  },
+}));
