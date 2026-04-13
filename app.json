@@ -2,6 +2,7 @@
   "expo": {
     "name": "GRIT",
     "slug": "grit-app",
+    "owner": "jitosz",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -17,7 +18,7 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.grit.app",
       "config": {
-        "googleMapsApiKey": "AIzaSyCyh-bLFvXAQ-A_iRnlaGd5wltd_uocDZ4"
+        "googleMapsApiKey": "AIzaSyCj1_xDHItQl4rwp-wFG5CMRaZ4x3ibjz8"
       },
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "GRIT needs your location to track runs with GPS precision.",
@@ -33,13 +34,15 @@
       "package": "com.grit.app",
       "config": {
         "googleMaps": {
-          "apiKey": "AIzaSyCyh-bLFvXAQ-A_iRnlaGd5wltd_uocDZ4"
+          "apiKey": "AIzaSyCj1_xDHItQl4rwp-wFG5CMRaZ4x3ibjz8"
         }
       },
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
-        "FOREGROUND_SERVICE"
+        "FOREGROUND_SERVICE",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
       ]
     },
     "web": {
@@ -52,6 +55,11 @@
           "locationAlwaysAndWhenInUsePermission": "GRIT needs your location to track runs."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "bfbf0fa7-7e76-45a1-85d3-be31a7c6aa11"
+      }
+    }
   }
 }

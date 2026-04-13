@@ -1,12 +1,16 @@
 /**
- * GRIT — RUN SUMMARY SCREEN
+ * GRIT — RUN SUMMARY SCREEN (Strava-level)
  *
- * Post-run summary with animated stats reveal.
- * Like Strava/Adidas Run — shows route on map + key metrics.
- * Cinematic feel with staggered number animations.
+ * Full post-run analysis:
+ * - Carte plein écran avec tracé + PR badges
+ * - Stats grid: Distance, Allure moy, Durée, D+, Alt max, Vitesse moy
+ * - Analyse d'allure: graphique barres par km avec ligne moyenne
+ * - Splits détaillés: Km / Allure / Barre proportionnelle / Élév par km
+ * - PR notifications
+ * - Performance intelligence
  */
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useMemo } from "react";
 import {
   View,
   Text,
@@ -17,312 +21,423 @@ import {
   Dimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Svg, { Rect, Line, Path, Text as SvgText } from "react-native-svg";
 import { colors, fonts, spacing } from "../design/tokens";
 import { RunMap } from "../components/RunMap";
-import { IconPace, IconElevation, IconTimer, IconArrowRight, IconShare, IconStats } from "../components/Icons";
-import { formatTime, formatPace, formatDistance, formatDistanceUnit, formatElevation, formatSpeed, formatDuration } from "../utils/formatters";
+import {
+  IconPace, IconElevation, IconTimer, IconArrowRight,
+  IconShare, IconStats, IconStar, IconFire, IconLocation,
+} from "../components/Icons";
+import {
+  formatTime, formatPace, formatDistance, formatDistanceUnit,
+  formatElevation, formatSpeed,
+} from "../utils/formatters";
 import type { RunSession } from "../types/workout";
-import Svg, { Path } from "react-native-svg";
+import type { Split } from "../types/gps";
+import { useWorkoutHistoryStore } from "../stores/useWorkoutHistoryStore";
 
-const { width: SCREEN_WIDTH } = Dimensions.get("window");
-
-interface RunSummaryScreenProps {
-  session: RunSession;
-  onDismiss: () => void;
-}
-
-// ─── Animated Counter ─────────────────────────────
-const AnimatedCounter: React.FC<{
-  value: string;
-  delay: number;
-  style?: any;
-}> = ({ value, delay, style }) => {
-  const opacity = useRef(new Animated.Value(0)).current;
-  const translateY = useRef(new Animated.Value(20)).current;
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      Animated.parallel([
-        Animated.timing(opacity, {
-          toValue: 1,
-          duration: 600,
-          useNativeDriver: true,
-        }),
-        Animated.spring(translateY, {
-          toValue: 0,
-          tension: 50,
-          friction: 8,
-          useNativeDriver: true,
-        }),
-      ]).start();
-    }, delay);
-    return () => clearTimeout(timer);
-  }, [delay]);
-
-  return (
-    <Animated.Text style={[style, { opacity, transform: [{ translateY }] }]}>
-      {value}
-    </Animated.Text>
-  );
-};
+const { width: SW } = Dimensions.get("window");
+const CHART_W = SW - spacing.lg * 2;
+const CHART_H = 160;
 
 // ─── Animated Section ─────────────────────────────
-const AnimatedSection: React.FC<{
-  children: React.ReactNode;
-  delay: number;
-}> = ({ children, delay }) => {
+const FadeIn: React.FC<{ delay: number; children: React.ReactNode }> = ({ delay, children }) => {
   const opacity = useRef(new Animated.Value(0)).current;
-  const translateY = useRef(new Animated.Value(30)).current;
+  const translateY = useRef(new Animated.Value(24)).current;
 
   useEffect(() => {
-    const timer = setTimeout(() => {
+    const t = setTimeout(() => {
       Animated.parallel([
-        Animated.timing(opacity, {
-          toValue: 1,
-          duration: 500,
-          useNativeDriver: true,
-        }),
-        Animated.timing(translateY, {
-          toValue: 0,
-          duration: 500,
-          useNativeDriver: true,
-        }),
+        Animated.timing(opacity, { toValue: 1, duration: 500, useNativeDriver: true }),
+        Animated.spring(translateY, { toValue: 0, tension: 60, friction: 9, useNativeDriver: true }),
       ]).start();
     }, delay);
-    return () => clearTimeout(timer);
+    return () => clearTimeout(t);
   }, [delay]);
 
+  return <Animated.View style={{ opacity, transform: [{ translateY }] }}>{children}</Animated.View>;
+};
+
+// ─── PR Banner ────────────────────────────────────
+const PrBanner: React.FC<{ records: string[] }> = ({ records }) => {
+  if (records.length === 0) return null;
   return (
-    <Animated.View style={{ opacity, transform: [{ translateY }] }}>
-      {children}
-    </Animated.View>
+    <FadeIn delay={200}>
+      <View style={styles.prBanner}>
+        <View style={styles.prIconBox}>
+          <IconStar size={20} color={colors.neonYellow} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.prTitle}>RECORD PERSONNEL</Text>
+          {records.map((r) => (
+            <Text key={r} style={styles.prText}>{r}</Text>
+          ))}
+        </View>
+      </View>
+    </FadeIn>
   );
 };
 
-// ─── Elevation Mini Graph ─────────────────────────
-const ElevationGraph: React.FC<{ trackPoints: RunSession["trackPoints"] }> = ({ trackPoints }) => {
-  if (trackPoints.length < 5) return null;
+// ─── Pace Analysis Chart (like Strava) ────────────
+const PaceChart: React.FC<{ splits: Split[]; avgPace: number }> = ({ splits, avgPace }) => {
+  if (splits.length === 0) return null;
 
-  const altitudes = trackPoints
-    .filter((p) => p.altitude !== null)
-    .map((p) => p.altitude as number);
+  const paces = splits.map((s) => s.paceSecPerKm);
+  const minPace = Math.min(...paces) - 15;
+  const maxPace = Math.max(...paces) + 15;
+  const range = maxPace - minPace || 1;
 
-  if (altitudes.length < 5) return null;
+  const barWidth = Math.min(40, (CHART_W - 40) / splits.length - 4);
+  const chartLeft = 40;
+  const chartWidth = CHART_W - chartLeft;
 
-  const minAlt = Math.min(...altitudes);
-  const maxAlt = Math.max(...altitudes);
-  const range = maxAlt - minAlt || 1;
-
-  const w = SCREEN_WIDTH - spacing.lg * 2;
-  const h = 60;
-  const step = w / (altitudes.length - 1);
-
-  // Build SVG path
-  let path = `M 0 ${h}`;
-  for (let i = 0; i < altitudes.length; i++) {
-    const x = i * step;
-    const y = h - ((altitudes[i] - minAlt) / range) * (h - 4);
-    path += ` L ${x} ${y}`;
+  // Y axis labels (pace values)
+  const yLabels = [];
+  const step = Math.ceil(range / 4 / 15) * 15;
+  for (let p = Math.floor(minPace / step) * step; p <= maxPace; p += step) {
+    if (p > 0) yLabels.push(p);
   }
-  path += ` L ${w} ${h} Z`;
+
+  // Average pace line Y position
+  const avgY = CHART_H - 20 - ((avgPace - minPace) / range) * (CHART_H - 40);
 
   return (
-    <View style={styles.elevGraph}>
-      <Svg width={w} height={h}>
-        <Path d={path} fill={colors.neonYellowDim} stroke={colors.neonYellow} strokeWidth={1.5} opacity={0.6} />
-      </Svg>
-      <View style={styles.elevLabels}>
-        <Text style={styles.elevLabel}>{Math.round(minAlt)}m</Text>
-        <Text style={styles.elevLabel}>{Math.round(maxAlt)}m</Text>
+    <View style={styles.chartSection}>
+      <Text style={styles.sectionTitle}>ANALYSE D'ALLURE</Text>
+      <View style={{ height: CHART_H + 20 }}>
+        <Svg width={CHART_W} height={CHART_H + 20}>
+          {/* Y axis labels */}
+          {yLabels.map((p) => {
+            const y = CHART_H - 20 - ((p - minPace) / range) * (CHART_H - 40);
+            const m = Math.floor(p / 60);
+            const s = Math.round(p % 60);
+            return (
+              <React.Fragment key={`y-${p}`}>
+                <SvgText x={2} y={y + 4} fill={colors.ash} fontSize={9} fontFamily="monospace">
+                  {m}:{String(s).padStart(2, "0")}
+                </SvgText>
+                <Line x1={chartLeft} y1={y} x2={CHART_W} y2={y} stroke={colors.graphite} strokeWidth={0.5} opacity={0.4} />
+              </React.Fragment>
+            );
+          })}
+
+          {/* Average pace dashed line */}
+          <Line
+            x1={chartLeft} y1={avgY} x2={CHART_W} y2={avgY}
+            stroke={colors.offWhite}
+            strokeWidth={1}
+            strokeDasharray="6,4"
+            opacity={0.5}
+          />
+
+          {/* Bars */}
+          {splits.map((split, i) => {
+            const pace = split.paceSecPerKm;
+            const barH = ((pace - minPace) / range) * (CHART_H - 40);
+            const x = chartLeft + (i * (chartWidth / splits.length)) + (chartWidth / splits.length - barWidth) / 2;
+            const y = CHART_H - 20 - barH;
+
+            // Color: faster than avg = neon yellow, slower = steel/blue
+            const isFaster = pace < avgPace - 5;
+            const isSlower = pace > avgPace + 5;
+            const barColor = isFaster ? colors.neonYellow : isSlower ? "#3B82F6" : colors.steel;
+
+            return (
+              <Rect
+                key={`bar-${i}`}
+                x={x}
+                y={y}
+                width={barWidth}
+                height={barH}
+                rx={3}
+                fill={barColor}
+                opacity={0.85}
+              />
+            );
+          })}
+        </Svg>
       </View>
+      <Text style={styles.chartUnit}>/km</Text>
+    </View>
+  );
+};
+
+// ─── Splits Table (like Strava) ───────────────────
+const SplitsTable: React.FC<{ splits: Split[]; avgPace: number }> = ({ splits, avgPace }) => {
+  if (splits.length === 0) return null;
+
+  const fastestPace = Math.min(...splits.map((s) => s.paceSecPerKm));
+
+  return (
+    <View style={styles.splitsSection}>
+      <Text style={styles.sectionTitle}>TEMPS INTERMÉDIAIRES</Text>
+
+      {/* Header */}
+      <View style={styles.splitsHeader}>
+        <Text style={[styles.splitsHeaderText, { width: 32 }]}>Km</Text>
+        <Text style={[styles.splitsHeaderText, { width: 48 }]}>Allure</Text>
+        <View style={{ flex: 1 }} />
+        <Text style={[styles.splitsHeaderText, { width: 44, textAlign: "right" }]}>Élév.</Text>
+      </View>
+
+      <View style={styles.splitsHeaderLine} />
+
+      {/* Rows */}
+      {splits.map((split, i) => {
+        const isFaster = split.paceSecPerKm < avgPace - 5;
+        const isSlower = split.paceSecPerKm > avgPace + 5;
+        const barPercent = (fastestPace / split.paceSecPerKm) * 100;
+        const barColor = isFaster ? colors.neonYellow : isSlower ? "#3B82F6" : colors.steel;
+
+        // Elevation per split
+        const elevChange = split.elevationChangeM || 0;
+
+        return (
+          <FadeIn key={`split-${split.kmIndex}`} delay={800 + i * 60}>
+            <View style={styles.splitRow}>
+              <Text style={styles.splitKm}>{split.kmIndex}</Text>
+              <Text style={[styles.splitPace, isFaster && { color: colors.neonYellow }]}>
+                {formatPace(split.paceSecPerKm)}
+              </Text>
+              <View style={styles.splitBarContainer}>
+                <View
+                  style={[styles.splitBar, { width: `${barPercent}%`, backgroundColor: barColor }]}
+                />
+              </View>
+              <Text style={styles.splitElev}>
+                {elevChange >= 0 ? `${Math.round(elevChange)}` : `${Math.round(elevChange)}`}
+              </Text>
+            </View>
+          </FadeIn>
+        );
+      })}
+    </View>
+  );
+};
+
+// ─── Performance Intelligence ─────────────────────
+const PerformanceInsight: React.FC<{ session: RunSession }> = ({ session }) => {
+  const distKm = (session.totalDistanceM / 1000).toFixed(1);
+  const avgPaceStr = formatPace(session.avgPaceSecPerKm);
+  const duration = formatTime(session.totalDurationMs, true);
+
+  // Build insight message
+  let message = "";
+  const splits = session.splits;
+
+  if (splits.length >= 3) {
+    const firstHalf = splits.slice(0, Math.floor(splits.length / 2));
+    const secondHalf = splits.slice(Math.floor(splits.length / 2));
+    const avgFirst = firstHalf.reduce((s, sp) => s + sp.paceSecPerKm, 0) / firstHalf.length;
+    const avgSecond = secondHalf.reduce((s, sp) => s + sp.paceSecPerKm, 0) / secondHalf.length;
+
+    if (avgSecond < avgFirst - 10) {
+      message = `Negative split. Tu as accéléré en seconde moitié avec une allure moyenne de ${formatPace(avgSecond)}/km contre ${formatPace(avgFirst)}/km en première moitié. Excellente gestion de course.`;
+    } else if (avgSecond > avgFirst + 15) {
+      message = `Positive split. Tu as ralenti en seconde moitié (${formatPace(avgSecond)}/km vs ${formatPace(avgFirst)}/km). Essaie de partir moins vite pour maintenir l'allure.`;
+    } else {
+      message = `Allure régulière sur ${distKm}km avec une moyenne de ${avgPaceStr}/km. Bonne maîtrise du rythme.`;
+    }
+  } else {
+    message = `Course de ${distKm}km en ${duration} à ${avgPaceStr}/km.`;
+  }
+
+  if (session.elevationGainM > 50) {
+    message += ` Dénivelé positif de ${Math.round(session.elevationGainM)}m.`;
+  }
+
+  return (
+    <View style={styles.insightCard}>
+      <View style={styles.insightHeader}>
+        <IconFire size={16} color={colors.neonYellow} />
+        <Text style={styles.insightTitle}>GRIT INTELLIGENCE</Text>
+      </View>
+      <Text style={styles.insightText}>{message}</Text>
     </View>
   );
 };
 
 // ─── Main Screen ──────────────────────────────────
+interface RunSummaryScreenProps {
+  session: RunSession;
+  onDismiss: () => void;
+}
+
 export const RunSummaryScreen: React.FC<RunSummaryScreenProps> = ({
   session,
   onDismiss,
 }) => {
   const insets = useSafeAreaInsets();
+  const personalRecords = useWorkoutHistoryStore((s) => s.personalRecords);
 
-  // Calculate additional stats
-  const avgSpeed = session.totalDistanceM / (session.totalDurationMs / 1000); // m/s
+  // Computed stats
+  const avgSpeed = session.totalDistanceM / (session.totalDurationMs / 1000);
+  const maxAltitude = Math.max(
+    ...session.trackPoints.filter((p) => p.altitude !== null).map((p) => p.altitude as number),
+    0
+  );
+
+  // Check for PRs achieved in this session
+  const sessionPRs = personalRecords
+    .filter((pr) => pr.sessionId === session.id)
+    .map((pr) => `Meilleur temps sur ${pr.category} !`);
+
+  // Elevation profile data
+  const elevations = session.trackPoints
+    .filter((p) => p.altitude !== null)
+    .map((p) => p.altitude as number);
+
+  const elevMin = elevations.length > 0 ? Math.min(...elevations) : 0;
+  const elevMax = elevations.length > 0 ? Math.max(...elevations) : 0;
+  const elevRange = elevMax - elevMin || 1;
+
+  // Build elevation SVG path
+  let elevPath = "";
+  if (elevations.length > 4) {
+    const step = (CHART_W) / (elevations.length - 1);
+    elevPath = `M 0 60`;
+    for (let i = 0; i < elevations.length; i++) {
+      const x = i * step;
+      const y = 60 - ((elevations[i] - elevMin) / elevRange) * 52;
+      elevPath += ` L ${x} ${y}`;
+    }
+    elevPath += ` L ${CHART_W} 60 Z`;
+  }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
-        {/* Header */}
-        <AnimatedSection delay={0}>
-          <View style={styles.header}>
-            <Text style={styles.completeLabel}>RUN COMPLETE</Text>
-            <Text style={styles.dateLabel}>
-              {new Date(session.startedAt).toLocaleDateString("fr-FR", {
-                weekday: "long",
-                day: "numeric",
-                month: "long",
-              }).toUpperCase()}
-            </Text>
-            {session.notes && (
-              <Text style={styles.locationLabel}>{session.notes}</Text>
-            )}
-          </View>
-        </AnimatedSection>
 
-        {/* Hero Distance */}
-        <AnimatedSection delay={300}>
-          <View style={styles.heroBlock}>
-            <AnimatedCounter
-              value={formatDistance(session.totalDistanceM)}
-              delay={400}
-              style={styles.heroValue}
-            />
-            <AnimatedCounter
-              value={formatDistanceUnit(session.totalDistanceM)}
-              delay={500}
-              style={styles.heroUnit}
-            />
-          </View>
-        </AnimatedSection>
+        {/* ─── Map (plein écran comme Strava) ─── */}
+        <FadeIn delay={0}>
+          <RunMap
+            trackPoints={session.trackPoints}
+            splits={session.splits}
+            isLive={false}
+            height={350}
+          />
+        </FadeIn>
 
-        {/* Map */}
-        <AnimatedSection delay={600}>
-          <View style={styles.mapBlock}>
-            <RunMap
-              trackPoints={session.trackPoints}
-              splits={session.splits}
-              isLive={false}
-              height={250}
-            />
-          </View>
-        </AnimatedSection>
+        <View style={styles.content}>
 
-        {/* Key Metrics Grid */}
-        <AnimatedSection delay={900}>
-          <View style={styles.metricsGrid}>
-            {/* Duration */}
-            <View style={styles.metricCard}>
-              <View style={styles.metricIcon}>
-                <IconTimer size={16} color={colors.silver} />
+          {/* ─── Header: Date + Location ─── */}
+          <FadeIn delay={100}>
+            <View style={styles.header}>
+              <View style={styles.headerRow}>
+                <IconLocation size={14} color={colors.ash} />
+                <Text style={styles.dateText}>
+                  {new Date(session.startedAt).toLocaleDateString("fr-FR", {
+                    weekday: "long",
+                    day: "numeric",
+                    month: "long",
+                    year: "numeric",
+                  })}
+                  {session.notes ? ` · ${session.notes}` : ""}
+                </Text>
               </View>
-              <Text style={styles.metricLabel}>DURATION</Text>
-              <AnimatedCounter
-                value={formatTime(session.totalDurationMs, true)}
-                delay={1000}
-                style={styles.metricValue}
-              />
+              <Text style={styles.activityType}>COURSE À PIED</Text>
             </View>
+          </FadeIn>
 
-            {/* Avg Pace */}
-            <View style={styles.metricCard}>
-              <View style={styles.metricIcon}>
-                <IconPace size={16} color={colors.neonYellow} />
+          {/* ─── PR Banner ─── */}
+          <PrBanner records={sessionPRs} />
+
+          {/* ─── Stats Grid (2x3 like Strava) ─── */}
+          <FadeIn delay={300}>
+            <View style={styles.statsGrid}>
+              <View style={styles.statCell}>
+                <Text style={styles.statLabel}>Distance</Text>
+                <Text style={styles.statValue}>
+                  {(session.totalDistanceM / 1000).toFixed(2)}{" "}
+                  <Text style={styles.statUnit}>km</Text>
+                </Text>
               </View>
-              <Text style={styles.metricLabel}>AVG PACE</Text>
-              <AnimatedCounter
-                value={formatPace(session.avgPaceSecPerKm)}
-                delay={1100}
-                style={[styles.metricValue, { color: colors.neonYellow }]}
-              />
-              <Text style={styles.metricUnit}>/km</Text>
-            </View>
-
-            {/* Avg Speed */}
-            <View style={styles.metricCard}>
-              <View style={styles.metricIcon}>
-                <IconStats size={16} color={colors.silver} />
+              <View style={styles.statCell}>
+                <Text style={styles.statLabel}>Allure moyenne</Text>
+                <Text style={styles.statValue}>
+                  {formatPace(session.avgPaceSecPerKm)}{" "}
+                  <Text style={styles.statUnit}>/km</Text>
+                </Text>
               </View>
-              <Text style={styles.metricLabel}>AVG SPEED</Text>
-              <AnimatedCounter
-                value={formatSpeed(avgSpeed)}
-                delay={1200}
-                style={styles.metricValue}
-              />
-              <Text style={styles.metricUnit}>km/h</Text>
-            </View>
-
-            {/* Elevation */}
-            <View style={styles.metricCard}>
-              <View style={styles.metricIcon}>
-                <IconElevation size={16} color={colors.neonYellow} />
+              <View style={styles.statCell}>
+                <Text style={styles.statLabel}>Durée</Text>
+                <Text style={styles.statValue}>
+                  {formatTime(session.totalDurationMs, true)}
+                </Text>
               </View>
-              <Text style={styles.metricLabel}>ELEVATION</Text>
-              <AnimatedCounter
-                value={formatElevation(session.elevationGainM)}
-                delay={1300}
-                style={styles.metricValue}
-              />
-              <Text style={styles.metricUnit}>meters</Text>
+              <View style={styles.statCell}>
+                <Text style={styles.statLabel}>Dénivelé positif</Text>
+                <Text style={styles.statValue}>
+                  {Math.round(session.elevationGainM)}{" "}
+                  <Text style={styles.statUnit}>m</Text>
+                </Text>
+              </View>
+              <View style={styles.statCell}>
+                <Text style={styles.statLabel}>Altitude max</Text>
+                <Text style={styles.statValue}>
+                  {Math.round(maxAltitude)}{" "}
+                  <Text style={styles.statUnit}>m</Text>
+                </Text>
+              </View>
+              <View style={styles.statCell}>
+                <Text style={styles.statLabel}>Vitesse moy</Text>
+                <Text style={styles.statValue}>
+                  {formatSpeed(avgSpeed)}{" "}
+                  <Text style={styles.statUnit}>km/h</Text>
+                </Text>
+              </View>
             </View>
-          </View>
-        </AnimatedSection>
+          </FadeIn>
 
-        {/* Elevation Profile */}
-        <AnimatedSection delay={1400}>
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>ELEVATION PROFILE</Text>
-            <ElevationGraph trackPoints={session.trackPoints} />
-          </View>
-        </AnimatedSection>
+          {/* ─── Performance Intelligence ─── */}
+          <FadeIn delay={500}>
+            <PerformanceInsight session={session} />
+          </FadeIn>
 
-        {/* Split Times */}
-        {session.splits.length > 0 && (
-          <AnimatedSection delay={1600}>
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>SPLITS</Text>
-              {session.splits.map((split, i) => {
-                const prevPace = i > 0 ? session.splits[i - 1].paceSecPerKm : null;
-                const diff = prevPace ? split.paceSecPerKm - prevPace : 0;
-                const isFaster = diff < -2;
-                const isSlower = diff > 2;
+          {/* ─── Pace Analysis Chart ─── */}
+          <FadeIn delay={600}>
+            <PaceChart splits={session.splits} avgPace={session.avgPaceSecPerKm} />
+          </FadeIn>
 
-                return (
-                  <AnimatedSection key={`split-${split.kmIndex}`} delay={1700 + i * 80}>
-                    <View style={styles.splitRow}>
-                      <Text style={styles.splitKm}>KM {split.kmIndex}</Text>
-                      <View style={styles.splitPaceBar}>
-                        <View
-                          style={[
-                            styles.splitBar,
-                            {
-                              width: `${Math.min(100, (session.avgPaceSecPerKm / split.paceSecPerKm) * 80)}%`,
-                              backgroundColor: isFaster ? colors.neonYellow : isSlower ? colors.danger : colors.steel,
-                            },
-                          ]}
-                        />
-                      </View>
-                      <Text
-                        style={[
-                          styles.splitPace,
-                          isFaster && { color: colors.neonYellow },
-                          isSlower && { color: colors.danger },
-                        ]}
-                      >
-                        {formatPace(split.paceSecPerKm)}
-                      </Text>
-                    </View>
-                  </AnimatedSection>
-                );
-              })}
+          {/* ─── Splits Table ─── */}
+          <FadeIn delay={700}>
+            <SplitsTable splits={session.splits} avgPace={session.avgPaceSecPerKm} />
+          </FadeIn>
+
+          {/* ─── Elevation Profile ─── */}
+          {elevPath !== "" && (
+            <FadeIn delay={900}>
+              <View style={styles.elevSection}>
+                <Text style={styles.sectionTitle}>PROFIL D'ALTITUDE</Text>
+                <View style={styles.elevContainer}>
+                  <Svg width={CHART_W} height={60}>
+                    <Path d={elevPath} fill={colors.neonYellowDim} stroke={colors.neonYellow} strokeWidth={1.5} opacity={0.6} />
+                  </Svg>
+                  <View style={styles.elevLabels}>
+                    <Text style={styles.elevLabel}>{Math.round(elevMin)}m</Text>
+                    <Text style={styles.elevLabel}>{Math.round(elevMax)}m</Text>
+                  </View>
+                </View>
+              </View>
+            </FadeIn>
+          )}
+
+          {/* ─── Actions ─── */}
+          <FadeIn delay={1000}>
+            <View style={styles.actions}>
+              <TouchableOpacity style={styles.shareBtn} activeOpacity={0.7}>
+                <IconShare size={18} color={colors.silver} />
+                <Text style={styles.shareBtnText}>PARTAGER</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.doneBtn} onPress={onDismiss} activeOpacity={0.85}>
+                <Text style={styles.doneBtnText}>TERMINÉ</Text>
+                <IconArrowRight size={14} color={colors.black} strokeWidth={2.5} />
+              </TouchableOpacity>
             </View>
-          </AnimatedSection>
-        )}
+          </FadeIn>
 
-        {/* Actions */}
-        <AnimatedSection delay={2000}>
-          <View style={styles.actions}>
-            <TouchableOpacity style={styles.shareBtn} activeOpacity={0.7}>
-              <IconShare size={18} color={colors.silver} />
-              <Text style={styles.shareBtnText}>SHARE</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.doneBtn} onPress={onDismiss} activeOpacity={0.85}>
-              <Text style={styles.doneBtnText}>DONE</Text>
-              <IconArrowRight size={14} color={colors.black} strokeWidth={2.5} />
-            </TouchableOpacity>
-          </View>
-        </AnimatedSection>
-
-        <View style={{ height: 120 }} />
+          <View style={{ height: 100 }} />
+        </View>
       </ScrollView>
     </View>
   );
@@ -330,48 +445,97 @@ export const RunSummaryScreen: React.FC<RunSummaryScreenProps> = ({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.black },
-  header: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, marginBottom: spacing.md },
-  completeLabel: { fontFamily: fonts.bodyBold, fontSize: 12, color: colors.neonYellow, letterSpacing: 6, marginBottom: 8 },
-  dateLabel: { fontFamily: fonts.bodyMedium, fontSize: 11, color: colors.ash, letterSpacing: 3 },
-  locationLabel: { fontFamily: fonts.body, fontSize: 13, color: colors.silver, marginTop: 4 },
+  content: { paddingHorizontal: spacing.lg },
 
-  heroBlock: { flexDirection: "row", alignItems: "baseline", paddingHorizontal: spacing.lg, marginBottom: spacing.lg },
-  heroValue: { fontFamily: fonts.mono, fontSize: 72, fontWeight: "700", color: colors.offWhite, letterSpacing: -3 },
-  heroUnit: { fontFamily: fonts.bodyMedium, fontSize: 20, color: colors.ash, marginLeft: 8 },
+  // Header
+  header: { marginTop: spacing.lg, marginBottom: spacing.md },
+  headerRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  dateText: { fontFamily: fonts.body, fontSize: 13, color: colors.ash },
+  activityType: { fontFamily: fonts.headline, fontSize: 28, color: colors.offWhite, marginTop: 8, textTransform: "uppercase" },
 
-  mapBlock: { paddingHorizontal: spacing.lg, marginBottom: spacing.lg },
-
-  metricsGrid: { flexDirection: "row", flexWrap: "wrap", paddingHorizontal: spacing.lg, gap: spacing.sm, marginBottom: spacing.lg },
-  metricCard: {
-    width: (SCREEN_WIDTH - spacing.lg * 2 - spacing.sm) / 2 - 1,
-    backgroundColor: colors.carbon,
+  // PR Banner
+  prBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    backgroundColor: "rgba(239,255,0,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(239,255,0,0.2)",
     borderRadius: 12,
     padding: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  prIconBox: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: "rgba(239,255,0,0.15)",
+    alignItems: "center", justifyContent: "center",
+  },
+  prTitle: { fontFamily: fonts.bodyBold, fontSize: 10, color: colors.neonYellow, letterSpacing: 3, marginBottom: 4 },
+  prText: { fontFamily: fonts.bodySemibold, fontSize: 14, color: colors.offWhite },
+
+  // Stats Grid (2x3)
+  statsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginBottom: spacing.lg,
+  },
+  statCell: {
+    width: "50%",
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.graphite,
+  },
+  statLabel: { fontFamily: fonts.body, fontSize: 13, color: colors.ash, marginBottom: 4 },
+  statValue: { fontFamily: fonts.bodyBold, fontSize: 24, color: colors.offWhite },
+  statUnit: { fontFamily: fonts.body, fontSize: 14, color: colors.ash },
+
+  // Insight Card
+  insightCard: {
+    backgroundColor: colors.carbon,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: colors.graphite,
-    gap: 4,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
   },
-  metricIcon: { marginBottom: 4 },
-  metricLabel: { fontFamily: fonts.bodyMedium, fontSize: 9, color: colors.ash, letterSpacing: 3 },
-  metricValue: { fontFamily: fonts.mono, fontSize: 28, fontWeight: "700", color: colors.offWhite },
-  metricUnit: { fontFamily: fonts.bodyMedium, fontSize: 10, color: colors.ash },
+  insightHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: spacing.sm },
+  insightTitle: { fontFamily: fonts.bodyBold, fontSize: 10, color: colors.neonYellow, letterSpacing: 3 },
+  insightText: { fontFamily: fonts.body, fontSize: 14, color: colors.silver, lineHeight: 22 },
 
-  section: { paddingHorizontal: spacing.lg, marginBottom: spacing.lg },
-  sectionTitle: { fontFamily: fonts.bodyMedium, fontSize: 9, color: colors.ash, letterSpacing: 4, marginBottom: spacing.sm },
+  // Pace Chart
+  chartSection: { marginBottom: spacing.lg },
+  sectionTitle: { fontFamily: fonts.bodyBold, fontSize: 15, color: colors.offWhite, marginBottom: spacing.md },
+  chartUnit: { fontFamily: fonts.body, fontSize: 10, color: colors.ash, textAlign: "left", marginTop: -4 },
 
-  elevGraph: { marginBottom: spacing.xs },
+  // Splits Table
+  splitsSection: { marginBottom: spacing.lg },
+  splitsHeader: { flexDirection: "row", alignItems: "center", paddingVertical: 6 },
+  splitsHeaderText: { fontFamily: fonts.body, fontSize: 12, color: colors.ash },
+  splitsHeaderLine: { height: 1, backgroundColor: colors.graphite, marginBottom: 4 },
+  splitRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, gap: 8 },
+  splitKm: { fontFamily: fonts.body, fontSize: 14, color: colors.ash, width: 32 },
+  splitPace: { fontFamily: fonts.bodyBold, fontSize: 14, color: colors.offWhite, width: 48 },
+  splitBarContainer: { flex: 1, height: 8, backgroundColor: "transparent", borderRadius: 4 },
+  splitBar: { height: "100%", borderRadius: 4 },
+  splitElev: { fontFamily: fonts.body, fontSize: 13, color: colors.ash, width: 44, textAlign: "right" },
+
+  // Elevation
+  elevSection: { marginBottom: spacing.lg },
+  elevContainer: {},
   elevLabels: { flexDirection: "row", justifyContent: "space-between", marginTop: 4 },
   elevLabel: { fontFamily: fonts.mono, fontSize: 9, color: colors.ash },
 
-  splitRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginBottom: 6 },
-  splitKm: { fontFamily: fonts.mono, fontSize: 11, fontWeight: "700", color: colors.ash, width: 38 },
-  splitPaceBar: { flex: 1, height: 6, backgroundColor: colors.graphite, borderRadius: 3, overflow: "hidden" },
-  splitBar: { height: "100%", borderRadius: 3 },
-  splitPace: { fontFamily: fonts.mono, fontSize: 13, fontWeight: "700", color: colors.offWhite, width: 44, textAlign: "right" },
-
-  actions: { flexDirection: "row", paddingHorizontal: spacing.lg, gap: spacing.sm },
-  shareBtn: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 16, paddingHorizontal: 24, borderRadius: 10, borderWidth: 1, borderColor: colors.graphite, backgroundColor: colors.carbon },
+  // Actions
+  actions: { flexDirection: "row", gap: spacing.sm, marginBottom: spacing.lg },
+  shareBtn: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    paddingVertical: 16, paddingHorizontal: 24,
+    borderRadius: 10, borderWidth: 1, borderColor: colors.graphite, backgroundColor: colors.carbon,
+  },
   shareBtnText: { fontFamily: fonts.bodyBold, fontSize: 12, color: colors.silver, letterSpacing: 3 },
-  doneBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.neonYellow, paddingVertical: 16, borderRadius: 10 },
+  doneBtn: {
+    flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+    backgroundColor: colors.neonYellow, paddingVertical: 16, borderRadius: 10,
+  },
   doneBtnText: { fontFamily: fonts.bodyBold, fontSize: 14, color: colors.black, letterSpacing: 4 },
 });
