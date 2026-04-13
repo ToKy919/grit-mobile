@@ -13,6 +13,7 @@ import Svg, { Rect as SvgRect } from "react-native-svg";
 import { colors, fonts, spacing } from "../design/tokens";
 import { IconUser, IconArrowRight } from "../components/Icons";
 import { FadeSlideUp, RevealLine, stagger } from "../components/Animated";
+import { BackgroundImage } from "../components/BackgroundImage";
 import { useWorkoutHistoryStore } from "../stores/useWorkoutHistoryStore";
 import { getStreak } from "../utils/dateUtils";
 import { formatTime, formatPace } from "../utils/formatters";
@@ -49,13 +50,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onStartSession }) => {
 
   return (
     <View style={styles.screen}>
-      {/* Background gradient (replicates Remotion radial glow) */}
-      <LinearGradient
-        colors={["rgba(26,26,26,0.8)", colors.black]}
-        style={StyleSheet.absoluteFill}
-        start={{ x: 0.7, y: 0 }}
-        end={{ x: 0.3, y: 0.7 }}
-      />
+      {/* Background image — ultra subtle editorial feel */}
+      <BackgroundImage image="silhouette" opacity={0.07} />
 
       {/* Content */}
       <View style={[styles.content, { paddingTop: insets.top + 16 }]}>

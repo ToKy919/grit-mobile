@@ -13,6 +13,7 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { colors, fonts, spacing } from "../design/tokens";
 import { IconCheck, IconLock, IconArrowRight } from "../components/Icons";
 import { FadeSlideUp, stagger } from "../components/Animated";
+import { BackgroundImage } from "../components/BackgroundImage";
 import { useHyroxSession } from "../hooks/useHyroxSession";
 import { useActiveWorkoutStore } from "../stores/useActiveWorkoutStore";
 import { useWorkoutHistoryStore } from "../stores/useWorkoutHistoryStore";
@@ -54,18 +55,23 @@ export const HyroxScreen: React.FC = () => {
 
   const progress = (hyrox.completedCount / hyrox.totalStations) * 100;
 
-  // ─── IDLE (Remotion design: ROXZONE + station list) ─
+  // ─── IDLE / FINISHED ─────────────────────────────
+  const runStations = hyrox.stations.filter((s) => s.stationDef.isRun);
+  const exoStations = hyrox.stations.filter((s) => !s.stationDef.isRun);
+
   if (hyrox.phase === "idle" || hyrox.phase === "finished") {
     return (
-      <ScrollView style={[styles.screen, { paddingTop: insets.top + 16 }]} showsVerticalScrollIndicator={false}>
+      <View style={{ flex: 1, backgroundColor: colors.black }}>
+        <BackgroundImage image="crossfit" opacity={0.05} />
+        <ScrollView style={[styles.screen, { paddingTop: insets.top + 16 }]} showsVerticalScrollIndicator={false}>
         <FadeSlideUp delay={0}>
           <Text style={styles.label}>HYROX RACE SIM</Text>
         </FadeSlideUp>
-
         <FadeSlideUp delay={stagger(1)}>
           <Text style={styles.heroTitle}>ROXZONE</Text>
         </FadeSlideUp>
 
+        {/* Finished banner */}
         {hyrox.phase === "finished" && (
           <FadeSlideUp delay={stagger(2)}>
             <View style={styles.finBanner}>
@@ -75,41 +81,82 @@ export const HyroxScreen: React.FC = () => {
           </FadeSlideUp>
         )}
 
-        {/* Station list (Remotion layout: circle + name + detail + time) */}
+        {/* Race overview cards */}
+        <FadeSlideUp delay={stagger(2)}>
+          <View style={styles.overviewRow}>
+            <View style={styles.overviewCard}>
+              <Text style={styles.overviewValue}>16</Text>
+              <Text style={styles.overviewLabel}>STATIONS</Text>
+            </View>
+            <View style={styles.overviewCard}>
+              <Text style={styles.overviewValue}>8 km</Text>
+              <Text style={styles.overviewLabel}>RUNNING</Text>
+            </View>
+            <View style={styles.overviewCard}>
+              <Text style={styles.overviewValue}>8</Text>
+              <Text style={styles.overviewLabel}>EXERCISES</Text>
+            </View>
+          </View>
+        </FadeSlideUp>
+
+        {/* How it works */}
+        <FadeSlideUp delay={stagger(3)}>
+          <View style={styles.howItWorks}>
+            <Text style={styles.howTitle}>COMMENT ÇA MARCHE</Text>
+            <Text style={styles.howStep}>1. Appuie START RACE pour lancer le chrono</Text>
+            <Text style={styles.howStep}>2. Appuie DONE quand tu termines une station</Text>
+            <Text style={styles.howStep}>3. Le chrono de transition se lance automatiquement</Text>
+            <Text style={styles.howStep}>4. Appuie GO pour démarrer la station suivante</Text>
+          </View>
+        </FadeSlideUp>
+
+        {/* Station list with alternating RUN / EXERCISE visual */}
+        <FadeSlideUp delay={stagger(4)}>
+          <Text style={styles.stationListTitle}>PARCOURS</Text>
+        </FadeSlideUp>
+
         <View style={styles.stationList}>
           {hyrox.stations.map((s, i) => {
             const isDone = s.status === "completed";
-            const isActive = s.status === "active";
+            const isRun = s.stationDef.isRun;
 
             return (
-              <FadeSlideUp key={s.stationDef.id} delay={stagger(i + 3, 40)}>
-                <View style={[styles.stationRow, isActive && styles.stationActive, !isDone && !isActive && { opacity: 0.4 }]}>
-                  {isActive && <View style={styles.activeGlow} />}
-
-                  <View style={[styles.statusCircle, isDone && styles.statusDone, isActive && styles.statusActiveCir]}>
-                    {isDone && <IconCheck size={14} color={colors.black} strokeWidth={3} />}
-                    {isActive && <View style={styles.activeDot} />}
-                    {!isDone && !isActive && <IconLock size={10} color={colors.ash} />}
+              <FadeSlideUp key={s.stationDef.id} delay={stagger(i + 5, 30)}>
+                <View style={[styles.stationRow, isDone && styles.stationDoneRow]}>
+                  {/* Number */}
+                  <View style={[styles.stationNum, isRun ? styles.stationNumRun : styles.stationNumExo]}>
+                    <Text style={[styles.stationNumText, !isRun && { color: colors.black }]}>
+                      {String(i + 1).padStart(2, "0")}
+                    </Text>
                   </View>
 
-                  <View style={{ flex: 1, zIndex: 1 }}>
-                    <Text style={[styles.stationName, isActive && { color: colors.neonYellow }, isDone && { color: colors.offWhite }]}>
+                  {/* Info */}
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.stationName, isRun && { color: colors.ash }]}>
                       {s.stationDef.name}
                     </Text>
                     <Text style={styles.stationDetail}>{s.stationDef.detail}</Text>
                   </View>
 
+                  {/* Type badge */}
+                  <View style={[styles.typeBadge, isRun ? styles.typeBadgeRun : styles.typeBadgeExo]}>
+                    <Text style={[styles.typeBadgeText, !isRun && { color: colors.black }]}>
+                      {isRun ? "RUN" : "EXO"}
+                    </Text>
+                  </View>
+
+                  {/* Time if done */}
                   {isDone && s.durationMs != null && (
                     <Text style={styles.stationTime}>{formatTime(s.durationMs)}</Text>
                   )}
-                  {isActive && <Text style={styles.nowBadge}>NOW</Text>}
                 </View>
               </FadeSlideUp>
             );
           })}
         </View>
 
-        <FadeSlideUp delay={stagger(20)}>
+        {/* CTA */}
+        <FadeSlideUp delay={stagger(22)}>
           <TouchableOpacity
             style={styles.ctaButton}
             onPress={hyrox.phase === "finished" ? hyrox.reset : handleStart}
@@ -122,6 +169,7 @@ export const HyroxScreen: React.FC = () => {
 
         <View style={{ height: 120 }} />
       </ScrollView>
+      </View>
     );
   }
 
@@ -212,18 +260,41 @@ const styles = StyleSheet.create({
   finBannerLabel: { fontFamily: fonts.bodyBold, fontSize: 11, color: colors.neonYellow, letterSpacing: 4, marginBottom: 8 },
   finBannerTime: { fontFamily: fonts.mono, fontSize: 36, fontWeight: "700", color: colors.offWhite },
 
-  // Station list (Remotion exact layout)
-  stationList: { gap: 6, marginBottom: spacing.xl },
-  stationRow: { flexDirection: "row", alignItems: "center", padding: spacing.md, borderRadius: 10, borderWidth: 1, borderColor: "rgba(42,42,42,0.4)", gap: spacing.md, overflow: "hidden" },
+  // Overview cards
+  overviewRow: { flexDirection: "row", gap: spacing.sm, marginBottom: spacing.lg },
+  overviewCard: { flex: 1, backgroundColor: colors.carbon, borderRadius: 12, paddingVertical: spacing.md, alignItems: "center", borderWidth: 1, borderColor: colors.graphite },
+  overviewValue: { fontFamily: fonts.bodyBold, fontSize: 22, color: colors.offWhite, marginBottom: 4 },
+  overviewLabel: { fontFamily: fonts.bodyMedium, fontSize: 8, color: colors.ash, letterSpacing: 3 },
+
+  // How it works
+  howItWorks: { backgroundColor: colors.carbon, borderRadius: 12, borderWidth: 1, borderColor: colors.graphite, padding: spacing.lg, marginBottom: spacing.lg },
+  howTitle: { fontFamily: fonts.bodyBold, fontSize: 10, color: colors.neonYellow, letterSpacing: 4, marginBottom: spacing.sm },
+  howStep: { fontFamily: fonts.body, fontSize: 13, color: colors.silver, lineHeight: 22, marginBottom: 4 },
+
+  // Station list
+  stationListTitle: { fontFamily: fonts.bodyMedium, fontSize: 9, color: colors.ash, letterSpacing: 4, marginBottom: spacing.sm },
+  stationList: { gap: 4, marginBottom: spacing.xl },
+  stationRow: { flexDirection: "row", alignItems: "center", padding: spacing.sm, paddingHorizontal: spacing.md, borderRadius: 10, borderWidth: 1, borderColor: colors.graphite, gap: spacing.md },
+  stationDoneRow: { borderColor: "rgba(239,255,0,0.15)", backgroundColor: "rgba(239,255,0,0.03)" },
+  stationNum: { width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  stationNumRun: { backgroundColor: colors.graphite },
+  stationNumExo: { backgroundColor: colors.neonYellow },
+  stationNumText: { fontFamily: fonts.mono, fontSize: 11, fontWeight: "700", color: colors.offWhite },
+  stationName: { fontFamily: fonts.bodyBold, fontSize: 13, color: colors.offWhite, letterSpacing: 1, textTransform: "uppercase" },
+  stationDetail: { fontFamily: fonts.body, fontSize: 11, color: colors.ash },
+  typeBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4 },
+  typeBadgeRun: { backgroundColor: colors.graphite },
+  typeBadgeExo: { backgroundColor: "rgba(239,255,0,0.2)" },
+  typeBadgeText: { fontFamily: fonts.bodyBold, fontSize: 8, color: colors.ash, letterSpacing: 2 },
+  stationTime: { fontFamily: fonts.mono, fontSize: 13, fontWeight: "600", color: colors.silver },
+
+  // Active mode (keep existing)
   stationActive: { backgroundColor: colors.carbon, borderColor: colors.neonYellow },
   activeGlow: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.neonYellowDim, opacity: 0.5 },
   statusCircle: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.graphite, alignItems: "center", justifyContent: "center", zIndex: 1 },
   statusDone: { backgroundColor: colors.neonYellow },
   statusActiveCir: { backgroundColor: "transparent", borderWidth: 2, borderColor: colors.neonYellow },
   activeDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.neonYellow },
-  stationName: { fontFamily: fonts.bodyBold, fontSize: 14, color: colors.ash, letterSpacing: 1, textTransform: "uppercase" },
-  stationDetail: { fontFamily: fonts.body, fontSize: 11, color: colors.ash, letterSpacing: 1 },
-  stationTime: { fontFamily: fonts.mono, fontSize: 14, fontWeight: "600", color: colors.silver, zIndex: 1 },
   nowBadge: { fontFamily: fonts.bodyBold, fontSize: 10, color: colors.neonYellow, letterSpacing: 2, zIndex: 1 },
 
   ctaButton: { backgroundColor: colors.neonYellow, paddingVertical: 18, borderRadius: 10, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, shadowColor: colors.neonYellow, shadowOpacity: 0.3, shadowRadius: 20, elevation: 8 },

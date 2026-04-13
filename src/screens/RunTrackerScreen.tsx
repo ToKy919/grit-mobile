@@ -10,15 +10,18 @@ import React, { useEffect, useCallback, useState } from "react";
 import { View, Text, TouchableOpacity, ScrollView, Alert, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
+import { LinearGradient } from "expo-linear-gradient";
+import Svg, { Circle, Line } from "react-native-svg";
 import { colors, fonts, spacing } from "../design/tokens";
-import { IconLocation, IconPace, IconElevation, IconTimer, IconPause, IconStop } from "../components/Icons";
+import { IconLocation, IconPace, IconElevation, IconTimer, IconPause, IconStop, IconArrowRight, IconStats } from "../components/Icons";
+import { FadeSlideUp } from "../components/Animated";
 import { RunMap } from "../components/RunMap";
 import { useGpsTracking } from "../hooks/useGpsTracking";
 import { useRunTrackerStore } from "../stores/useRunTrackerStore";
 import { useActiveWorkoutStore } from "../stores/useActiveWorkoutStore";
 import { useWorkoutHistoryStore } from "../stores/useWorkoutHistoryStore";
 import { useTimer } from "../hooks/useTimer";
-import { formatTime, formatPace, formatDistance, formatDistanceUnit, formatElevation, formatSpeed } from "../utils/formatters";
+import { formatTime, formatPace, formatDistance, formatDistanceUnit, formatElevation, formatSpeed, formatRelativeDate } from "../utils/formatters";
 import type { RunSession } from "../types/workout";
 import { hapticService } from "../services/haptics/hapticService";
 import { useEnvironment } from "../hooks/useEnvironment";
@@ -217,19 +220,111 @@ export const RunTrackerScreen: React.FC = () => {
     excellent: colors.neonYellow,
   }[gpsState.signalQuality];
 
-  // ─── Idle State (before start) ─────────────────
+  // ─── Idle State — Map preview + position + history ─
+  const historyRuns = useWorkoutHistoryStore((s) => s.sessions.filter((ss) => ss.type === "run" && ss.status === "completed")) as RunSession[];
+  const [showHistory, setShowHistory] = useState(false);
+
   if (phase === "idle") {
     return (
-      <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
-        <View style={styles.idleContent}>
-          <Text style={styles.idleLabel}>READY TO RUN</Text>
-          <IconLocation size={48} color={colors.ash} />
-          <Text style={styles.idleHint}>GPS tracking with live pace, distance, splits and elevation</Text>
+      <View style={[styles.container, { paddingTop: insets.top }]}>
 
-          <TouchableOpacity style={styles.startButton} activeOpacity={0.85} onPress={handleStart}>
-            <Text style={styles.startButtonText}>START RUN</Text>
-          </TouchableOpacity>
+        {/* Map preview area (takes top 50% of screen) */}
+        <View style={styles.idleMapArea}>
+          {/* Dark map placeholder with grid + current position dot */}
+          <Svg width="100%" height="100%" viewBox="0 0 393 380">
+            {/* Grid lines for map feel */}
+            {[60, 120, 180, 240, 300, 360].map((y) => (
+              <Line key={`h${y}`} x1={0} y1={y} x2={393} y2={y} stroke={colors.graphite} strokeWidth={0.5} opacity={0.2} />
+            ))}
+            {[60, 120, 180, 240, 300, 360].map((x) => (
+              <Line key={`v${x}`} x1={x} y1={0} x2={x} y2={380} stroke={colors.graphite} strokeWidth={0.5} opacity={0.2} />
+            ))}
+
+            {/* Current position pulse */}
+            <Circle cx={197} cy={190} r={30} fill="none" stroke={colors.neonYellow} strokeWidth={1} opacity={0.1} />
+            <Circle cx={197} cy={190} r={18} fill="none" stroke={colors.neonYellow} strokeWidth={1} opacity={0.2} />
+            <Circle cx={197} cy={190} r={8} fill={colors.neonYellow} opacity={0.9} />
+            <Circle cx={197} cy={190} r={12} fill="none" stroke={colors.neonYellow} strokeWidth={1.5} opacity={0.4} />
+
+            {/* Crosshair */}
+            <Line x1={197} y1={170} x2={197} y2={178} stroke={colors.ash} strokeWidth={1} opacity={0.3} />
+            <Line x1={197} y1={202} x2={197} y2={210} stroke={colors.ash} strokeWidth={1} opacity={0.3} />
+            <Line x1={177} y1={190} x2={185} y2={190} stroke={colors.ash} strokeWidth={1} opacity={0.3} />
+            <Line x1={209} y1={190} x2={217} y2={190} stroke={colors.ash} strokeWidth={1} opacity={0.3} />
+          </Svg>
+
+          {/* GPS status overlay */}
+          <View style={styles.idleGpsOverlay}>
+            <IconLocation size={12} color={colors.neonYellow} />
+            <Text style={styles.idleGpsText}>GPS READY</Text>
+          </View>
+
+          {/* Gradient fade at bottom */}
+          <LinearGradient
+            colors={["transparent", colors.black]}
+            style={styles.idleMapGradient}
+          />
         </View>
+
+        {/* Bottom content */}
+        <View style={styles.idleBottom}>
+          {/* Stats from last run (if any) */}
+          {historyRuns.length > 0 && (
+            <FadeSlideUp delay={100}>
+              <View style={styles.lastRunRow}>
+                <View>
+                  <Text style={styles.lastRunLabel}>LAST RUN</Text>
+                  <Text style={styles.lastRunValue}>
+                    {formatDistance((historyRuns[0] as RunSession).totalDistanceM)} km · {formatPace((historyRuns[0] as RunSession).avgPaceSecPerKm)}/km
+                  </Text>
+                </View>
+                <Text style={styles.lastRunTime}>
+                  {formatTime(historyRuns[0].totalDurationMs)}
+                </Text>
+              </View>
+            </FadeSlideUp>
+          )}
+
+          {/* START button — prominent */}
+          <FadeSlideUp delay={200}>
+            <TouchableOpacity style={styles.startButton} activeOpacity={0.85} onPress={handleStart}>
+              <Text style={styles.startButtonText}>START RUN</Text>
+              <IconArrowRight size={14} color={colors.black} strokeWidth={2.5} />
+            </TouchableOpacity>
+          </FadeSlideUp>
+        </View>
+
+        {/* Floating history button */}
+        {historyRuns.length > 0 && (
+          <TouchableOpacity
+            style={[styles.historyFab, { bottom: insets.bottom + 100 }]}
+            onPress={() => setShowHistory(!showHistory)}
+            activeOpacity={0.7}
+          >
+            <IconStats size={18} color={colors.offWhite} />
+            <Text style={styles.historyFabText}>{historyRuns.length}</Text>
+          </TouchableOpacity>
+        )}
+
+        {/* History panel (slides up on tap) */}
+        {showHistory && historyRuns.length > 0 && (
+          <View style={[styles.historyPanel, { bottom: insets.bottom + 150 }]}>
+            <Text style={styles.historyTitle}>PREVIOUS RUNS</Text>
+            <ScrollView style={{ maxHeight: 200 }} showsVerticalScrollIndicator={false}>
+              {historyRuns.slice(0, 5).map((run) => (
+                <View key={run.id} style={styles.historyItem}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.historyItemDate}>{formatRelativeDate(run.startedAt)}</Text>
+                    <Text style={styles.historyItemStats}>
+                      {formatDistance((run as RunSession).totalDistanceM)} km · {formatPace((run as RunSession).avgPaceSecPerKm)}/km
+                    </Text>
+                  </View>
+                  <Text style={styles.historyItemTime}>{formatTime(run.totalDurationMs)}</Text>
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        )}
       </View>
     );
   }
@@ -237,7 +332,7 @@ export const RunTrackerScreen: React.FC = () => {
   // ─── Active / Paused State ─────────────────────
   return (
     <ScrollView
-      style={[styles.container, { paddingTop: insets.top + 12 }]}
+      style={[styles.container, { paddingTop: insets.top + 12, paddingHorizontal: spacing.lg }]}
       showsVerticalScrollIndicator={false}
       bounces={false}
     >
@@ -394,13 +489,32 @@ export const RunTrackerScreen: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.black, paddingHorizontal: spacing.lg },
-  // Idle state
-  idleContent: { flex: 1, justifyContent: "center", alignItems: "center", gap: 24 },
-  idleLabel: { fontFamily: fonts.bodyBold, fontSize: 12, color: colors.ash, letterSpacing: 6 },
-  idleHint: { fontFamily: fonts.body, fontSize: 14, color: colors.ash, textAlign: "center", paddingHorizontal: 40, lineHeight: 22 },
-  startButton: { backgroundColor: colors.neonYellow, paddingVertical: 20, paddingHorizontal: 64, borderRadius: 12 },
+  container: { flex: 1, backgroundColor: colors.black },
+
+  // Idle — Map preview
+  idleMapArea: { flex: 1, backgroundColor: colors.carbon, position: "relative" },
+  idleGpsOverlay: { position: "absolute", top: 16, left: 16, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(10,10,10,0.8)", paddingVertical: 6, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1, borderColor: colors.graphite },
+  idleGpsText: { fontFamily: fonts.bodyBold, fontSize: 10, color: colors.neonYellow, letterSpacing: 3 },
+  idleMapGradient: { position: "absolute", bottom: 0, left: 0, right: 0, height: 100 },
+
+  idleBottom: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: spacing.xl },
+  lastRunRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: colors.carbon, borderRadius: 12, borderWidth: 1, borderColor: colors.graphite, padding: spacing.md, marginBottom: spacing.md },
+  lastRunLabel: { fontFamily: fonts.bodyMedium, fontSize: 9, color: colors.ash, letterSpacing: 3, marginBottom: 4 },
+  lastRunValue: { fontFamily: fonts.bodyBold, fontSize: 14, color: colors.offWhite },
+  lastRunTime: { fontFamily: fonts.mono, fontSize: 18, fontWeight: "700", color: colors.neonYellow },
+
+  startButton: { backgroundColor: colors.neonYellow, paddingVertical: 20, borderRadius: 12, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, shadowColor: colors.neonYellow, shadowOpacity: 0.3, shadowRadius: 20, elevation: 8 },
   startButtonText: { fontFamily: fonts.bodyBold, fontSize: 16, color: colors.black, letterSpacing: 4 },
+
+  historyFab: { position: "absolute", right: spacing.lg, width: 52, height: 52, borderRadius: 26, backgroundColor: colors.carbon, borderWidth: 1, borderColor: colors.graphite, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.3, shadowRadius: 10, elevation: 5 },
+  historyFabText: { fontFamily: fonts.bodyBold, fontSize: 9, color: colors.neonYellow, marginTop: 2 },
+
+  historyPanel: { position: "absolute", right: spacing.lg, left: spacing.lg, backgroundColor: colors.carbon, borderRadius: 14, borderWidth: 1, borderColor: colors.graphite, padding: spacing.md, shadowColor: "#000", shadowOpacity: 0.4, shadowRadius: 20, elevation: 10 },
+  historyTitle: { fontFamily: fonts.bodyBold, fontSize: 10, color: colors.ash, letterSpacing: 4, marginBottom: spacing.sm },
+  historyItem: { flexDirection: "row", alignItems: "center", paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.graphite },
+  historyItemDate: { fontFamily: fonts.body, fontSize: 12, color: colors.ash },
+  historyItemStats: { fontFamily: fonts.bodyBold, fontSize: 13, color: colors.offWhite, marginTop: 2 },
+  historyItemTime: { fontFamily: fonts.mono, fontSize: 14, fontWeight: "700", color: colors.silver },
   // Active state
   topBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.md },
   row: { flexDirection: "row", alignItems: "center", gap: 6 },
