@@ -1,158 +1,406 @@
 /**
- * GRIT — RUN TRACKER SCREEN (React Native)
+ * GRIT — RUN TRACKER SCREEN (Production)
+ *
+ * REAL GPS tracking via expo-location.
+ * REAL distance (Haversine), pace, splits, elevation.
+ * NO mock data. NO default values.
  */
 
-import React, { useState, useEffect } from "react";
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import React, { useEffect, useCallback, useState } from "react";
+import { View, Text, TouchableOpacity, ScrollView, Alert, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Svg, { Polyline, Circle, Line, Rect, Path, G, Text as SvgText } from "react-native-svg";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
+import Svg, { Polyline, Circle, Line, G, Text as SvgText } from "react-native-svg";
 import { colors, fonts, spacing } from "../design/tokens";
-import { IconLocation, IconPace, IconHeart, IconTimer, IconFire, IconElevation, IconPause, IconStop } from "../components/Icons";
+import { IconLocation, IconPace, IconElevation, IconTimer, IconPause, IconStop } from "../components/Icons";
+import { useGpsTracking } from "../hooks/useGpsTracking";
+import { useRunTrackerStore } from "../stores/useRunTrackerStore";
+import { useActiveWorkoutStore } from "../stores/useActiveWorkoutStore";
+import { useWorkoutHistoryStore } from "../stores/useWorkoutHistoryStore";
+import { useTimer } from "../hooks/useTimer";
+import { formatTime, formatPace, formatDistance, formatDistanceUnit, formatElevation, formatSpeed } from "../utils/formatters";
+import type { RunSession } from "../types/workout";
+import { hapticService } from "../services/haptics/hapticService";
+
+type RunPhase = "idle" | "running" | "paused" | "finished";
 
 export const RunTrackerScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
-  const [elapsed, setElapsed] = useState(0);
-  const [isRunning, setIsRunning] = useState(true);
+  const [phase, setPhase] = useState<RunPhase>("idle");
 
+  // GPS
+  const gps = useGpsTracking();
+  const gpsState = useRunTrackerStore();
+
+  // Timer
+  const timer = useTimer({ mode: "stopwatch" });
+
+  // Workout session
+  const activeWorkout = useActiveWorkoutStore();
+  const addSession = useWorkoutHistoryStore((s) => s.addSession);
+
+  // ─── Start Run ──────────────────────────────────
+  const handleStart = useCallback(async () => {
+    const granted = await gps.start();
+    if (!granted) {
+      Alert.alert(
+        "GPS Required",
+        "GRIT needs location access to track your run. Please enable it in Settings.",
+        [{ text: "OK" }]
+      );
+      return;
+    }
+
+    activeWorkout.startWorkout("run");
+    timer.start();
+    await activateKeepAwakeAsync();
+    hapticService.medium();
+    setPhase("running");
+  }, [gps, activeWorkout, timer]);
+
+  // ─── Pause / Resume ─────────────────────────────
+  const handlePauseResume = useCallback(() => {
+    if (phase === "running") {
+      timer.pause();
+      activeWorkout.pauseWorkout();
+      hapticService.light();
+      setPhase("paused");
+    } else if (phase === "paused") {
+      timer.resume();
+      activeWorkout.resumeWorkout();
+      hapticService.light();
+      setPhase("running");
+    }
+  }, [phase, timer, activeWorkout]);
+
+  // ─── Stop Run ───────────────────────────────────
+  const handleStop = useCallback(() => {
+    Alert.alert(
+      "End Run?",
+      `${formatDistance(gpsState.totalDistanceM)} ${formatDistanceUnit(gpsState.totalDistanceM)} in ${formatTime(timer.display.totalElapsedMs)}`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Save & End",
+          style: "destructive",
+          onPress: () => {
+            const elapsedMs = timer.stop();
+            gps.stop();
+            deactivateKeepAwake();
+
+            // Build RunSession
+            const session = activeWorkout.completeWorkout();
+            if (session) {
+              const runSession: RunSession = {
+                ...session,
+                type: "run",
+                totalDurationMs: elapsedMs,
+                trackPoints: gpsState.trackPoints,
+                splits: gpsState.splits,
+                totalDistanceM: gpsState.totalDistanceM,
+                elevationGainM: gpsState.elevationGainM,
+                avgPaceSecPerKm: gpsState.avgPaceSecPerKm,
+              };
+              addSession(runSession);
+            }
+
+            hapticService.workoutFinished();
+            gps.reset();
+            setPhase("finished");
+
+            // Reset to idle after brief delay
+            setTimeout(() => setPhase("idle"), 2000);
+          },
+        },
+      ]
+    );
+  }, [timer, gps, gpsState, activeWorkout, addSession]);
+
+  // Update elapsed in active workout store
   useEffect(() => {
-    if (!isRunning) return;
-    const interval = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(interval);
-  }, [isRunning]);
+    if (timer.isRunning) {
+      activeWorkout.updateElapsed(timer.display.totalElapsedMs);
+    }
+  }, [timer.display.totalElapsedMs]);
 
-  const mins = Math.floor(elapsed / 60);
-  const secs = elapsed % 60;
-  const timeStr = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-  const distance = (elapsed * 0.0033).toFixed(2); // ~12 km/h simulation
+  // ─── Map Rendering ──────────────────────────────
+  const renderMap = () => {
+    const points = gpsState.trackPoints;
+    if (points.length < 2) {
+      return (
+        <View style={styles.mapEmpty}>
+          <IconLocation size={24} color={colors.ash} />
+          <Text style={styles.mapEmptyText}>
+            {phase === "idle" ? "START A RUN TO SEE YOUR ROUTE" : "ACQUIRING GPS..."}
+          </Text>
+        </View>
+      );
+    }
 
-  const splits = [
-    { km: 1, pace: "4:48", trend: "\u2014" },
-    { km: 2, pace: "4:55", trend: "+7s" },
-    { km: 3, pace: "4:51", trend: "-4s" },
-  ];
+    // Transform GPS coords to SVG viewbox
+    const lats = points.map((p) => p.latitude);
+    const lons = points.map((p) => p.longitude);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLon = Math.min(...lons);
+    const maxLon = Math.max(...lons);
 
+    const padding = 20;
+    const svgW = 345;
+    const svgH = 160;
+    const rangeX = maxLon - minLon || 0.001;
+    const rangeY = maxLat - minLat || 0.001;
+
+    const toSvgX = (lon: number) => padding + ((lon - minLon) / rangeX) * (svgW - padding * 2);
+    const toSvgY = (lat: number) => svgH - padding - ((lat - minLat) / rangeY) * (svgH - padding * 2);
+
+    const polylinePoints = points.map((p) => `${toSvgX(p.longitude)},${toSvgY(p.latitude)}`).join(" ");
+    const lastPoint = points[points.length - 1];
+    const firstPoint = points[0];
+
+    return (
+      <Svg width="100%" height="100%" viewBox={`0 0 ${svgW} ${svgH}`}>
+        {/* Grid */}
+        {[0, 40, 80, 120, 160].map((y) => (
+          <Line key={`h${y}`} x1={0} y1={y} x2={svgW} y2={y} stroke={colors.graphite} strokeWidth={0.5} opacity={0.3} />
+        ))}
+
+        {/* Route */}
+        <Polyline
+          points={polylinePoints}
+          fill="none"
+          stroke={colors.neonYellow}
+          strokeWidth={2.5}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+
+        {/* Start marker */}
+        <Circle cx={toSvgX(firstPoint.longitude)} cy={toSvgY(firstPoint.latitude)} r={4} fill="none" stroke={colors.offWhite} strokeWidth={1.5} />
+        <Circle cx={toSvgX(firstPoint.longitude)} cy={toSvgY(firstPoint.latitude)} r={1.5} fill={colors.offWhite} />
+
+        {/* Current position */}
+        <Circle cx={toSvgX(lastPoint.longitude)} cy={toSvgY(lastPoint.latitude)} r={6} fill={colors.neonYellow} />
+        <Circle cx={toSvgX(lastPoint.longitude)} cy={toSvgY(lastPoint.latitude)} r={10} fill="none" stroke={colors.neonYellow} strokeWidth={1.5} opacity={0.4} />
+
+        {/* Km markers from splits */}
+        {gpsState.splits.map((split) => {
+          const splitPoint = points.find((p) => p.timestamp >= split.endTimestamp);
+          if (!splitPoint) return null;
+          return (
+            <G key={`km${split.kmIndex}`}>
+              <Circle cx={toSvgX(splitPoint.longitude)} cy={toSvgY(splitPoint.latitude)} r={8} fill={colors.carbon} stroke={colors.steel} strokeWidth={1} />
+              <SvgText
+                x={toSvgX(splitPoint.longitude)}
+                y={toSvgY(splitPoint.latitude) + 3.5}
+                textAnchor="middle"
+                fill={colors.offWhite}
+                fontSize={8}
+                fontWeight="600"
+              >
+                {split.kmIndex}
+              </SvgText>
+            </G>
+          );
+        })}
+      </Svg>
+    );
+  };
+
+  // ─── Signal Quality Label ──────────────────────
+  const signalLabel = {
+    searching: "SEARCHING...",
+    weak: "GPS WEAK",
+    good: "GPS GOOD",
+    excellent: "GPS LOCKED",
+  }[gpsState.signalQuality];
+
+  const signalColor = {
+    searching: colors.warning,
+    weak: colors.warning,
+    good: colors.neonYellow,
+    excellent: colors.neonYellow,
+  }[gpsState.signalQuality];
+
+  // ─── Idle State (before start) ─────────────────
+  if (phase === "idle" || phase === "finished") {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
+        <View style={styles.idleContent}>
+          <Text style={styles.idleLabel}>READY TO RUN</Text>
+          <IconLocation size={48} color={colors.ash} />
+          <Text style={styles.idleHint}>GPS tracking with live pace, distance, splits and elevation</Text>
+
+          <TouchableOpacity style={styles.startButton} activeOpacity={0.85} onPress={handleStart}>
+            <Text style={styles.startButtonText}>START RUN</Text>
+          </TouchableOpacity>
+
+          {phase === "finished" && (
+            <Text style={styles.savedLabel}>RUN SAVED</Text>
+          )}
+        </View>
+      </View>
+    );
+  }
+
+  // ─── Active / Paused State ─────────────────────
   return (
-    <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
+    <ScrollView
+      style={[styles.container, { paddingTop: insets.top + 12 }]}
+      showsVerticalScrollIndicator={false}
+      bounces={false}
+    >
       {/* Top Bar */}
       <View style={styles.topBar}>
         <View style={styles.row}>
-          <IconLocation size={14} color={colors.neonYellow} />
-          <Text style={styles.gpsLabel}>GPS LOCKED</Text>
+          <IconLocation size={14} color={signalColor} />
+          <Text style={[styles.gpsLabel, { color: signalColor }]}>{signalLabel}</Text>
         </View>
-        <View style={styles.row}>
-          <View style={styles.recDot} />
-          <Text style={styles.recLabel}>RECORDING</Text>
-        </View>
+        {phase === "running" && (
+          <View style={styles.row}>
+            <View style={styles.recDot} />
+            <Text style={styles.recLabel}>RECORDING</Text>
+          </View>
+        )}
+        {phase === "paused" && (
+          <Text style={[styles.recLabel, { color: colors.warning }]}>PAUSED</Text>
+        )}
       </View>
 
-      {/* Distance */}
+      {/* Distance — REAL from GPS */}
       <View style={styles.distanceBlock}>
         <Text style={styles.distLabel}>DISTANCE</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline" }}>
-          <Text style={styles.distValue}>{distance}</Text>
-          <Text style={styles.distUnit}>km</Text>
+          <Text style={styles.distValue}>
+            {formatDistance(gpsState.totalDistanceM)}
+          </Text>
+          <Text style={styles.distUnit}>{formatDistanceUnit(gpsState.totalDistanceM)}</Text>
         </View>
       </View>
 
-      {/* Time + Pace */}
+      {/* Time + Pace — REAL */}
       <View style={styles.timePaceRow}>
         <View>
           <Text style={styles.metricLabel}>TIME</Text>
           <View style={[styles.row, { marginTop: 4 }]}>
             <IconTimer size={14} color={colors.silver} />
-            <Text style={styles.metricValue}>{timeStr}</Text>
+            <Text style={styles.metricValue}>
+              {formatTime(timer.display.totalElapsedMs)}
+            </Text>
           </View>
         </View>
         <View>
           <Text style={styles.metricLabel}>AVG PACE</Text>
           <View style={[styles.row, { marginTop: 4 }]}>
             <IconPace size={14} color={colors.neonYellow} />
-            <Text style={[styles.metricValue, { color: colors.neonYellow }]}>4:55</Text>
+            <Text style={[styles.metricValue, { color: colors.neonYellow }]}>
+              {formatPace(gpsState.avgPaceSecPerKm)}
+            </Text>
             <Text style={styles.paceUnit}>/km</Text>
           </View>
         </View>
       </View>
 
-      {/* GPS Map */}
+      {/* GPS Map — REAL track points */}
       <View style={styles.mapContainer}>
-        <Svg width="100%" height="100%" viewBox="0 0 345 160">
-          {/* Grid */}
-          {[0, 40, 80, 120, 160].map((y) => (
-            <Line key={`h${y}`} x1={0} y1={y} x2={345} y2={y} stroke={colors.graphite} strokeWidth={0.5} opacity={0.4} />
-          ))}
-          {/* Route */}
-          <Polyline
-            points="30,130 60,120 90,110 120,95 150,85 180,75 210,68 240,55 270,45 310,35"
-            fill="none" stroke={colors.neonYellow} strokeWidth={2.5}
-            strokeLinecap="round" strokeLinejoin="round"
-          />
-          {/* Current position */}
-          <Circle cx={310} cy={35} r={6} fill={colors.neonYellow} />
-          <Circle cx={310} cy={35} r={10} fill="none" stroke={colors.neonYellow} strokeWidth={1.5} opacity={0.4} />
-          {/* Start */}
-          <Circle cx={30} cy={130} r={4} fill="none" stroke={colors.offWhite} strokeWidth={1.5} />
-          <Circle cx={30} cy={130} r={1.5} fill={colors.offWhite} />
-          {/* Km markers */}
-          {[{ x: 90, y: 110, k: "1" }, { x: 180, y: 75, k: "2" }, { x: 270, y: 45, k: "3" }].map((m) => (
-            <G key={m.k}>
-              <Circle cx={m.x} cy={m.y} r={8} fill={colors.carbon} stroke={colors.steel} strokeWidth={1} />
-              <SvgText x={m.x} y={m.y + 3.5} textAnchor="middle" fill={colors.offWhite} fontSize={8} fontWeight="600">{m.k}</SvgText>
-            </G>
-          ))}
-        </Svg>
+        {renderMap()}
       </View>
 
-      {/* Metrics Grid */}
+      {/* Metrics — REAL data only (no BPM without HR sensor) */}
       <View style={styles.metricsGrid}>
-        {[
-          { icon: <IconHeart size={14} color={colors.danger} />, label: "BPM", value: "158", sub: "ZONE 4", subColor: colors.danger },
-          { icon: <IconElevation size={14} color={colors.neonYellow} />, label: "ELEV", value: "+87", sub: "METERS", subColor: colors.ash },
-          { icon: <IconFire size={14} color="#F59E0B" />, label: "CAL", value: "384", sub: "KCAL", subColor: colors.ash },
-        ].map((m) => (
-          <View key={m.label} style={styles.metricCard}>
-            <View style={styles.row}>{m.icon}<Text style={styles.metricCardLabel}>{m.label}</Text></View>
-            <Text style={styles.metricCardValue}>{m.value}</Text>
-            <Text style={[styles.metricCardSub, { color: m.subColor }]}>{m.sub}</Text>
+        <View style={styles.metricCard}>
+          <View style={styles.row}>
+            <IconPace size={14} color={colors.neonYellow} />
+            <Text style={styles.metricCardLabel}>PACE</Text>
           </View>
-        ))}
+          <Text style={styles.metricCardValue}>
+            {formatPace(gpsState.currentPaceSecPerKm)}
+          </Text>
+          <Text style={styles.metricCardSub}>/KM</Text>
+        </View>
+        <View style={styles.metricCard}>
+          <View style={styles.row}>
+            <IconElevation size={14} color={colors.neonYellow} />
+            <Text style={styles.metricCardLabel}>ELEV</Text>
+          </View>
+          <Text style={styles.metricCardValue}>
+            {formatElevation(gpsState.elevationGainM)}
+          </Text>
+          <Text style={styles.metricCardSub}>METERS</Text>
+        </View>
+        <View style={styles.metricCard}>
+          <View style={styles.row}>
+            <IconTimer size={14} color={colors.silver} />
+            <Text style={styles.metricCardLabel}>SPEED</Text>
+          </View>
+          <Text style={styles.metricCardValue}>
+            {formatSpeed(gpsState.currentSpeed)}
+          </Text>
+          <Text style={styles.metricCardSub}>KM/H</Text>
+        </View>
       </View>
 
-      {/* Splits */}
-      <View style={styles.splitsSection}>
-        <Text style={styles.splitsTitle}>SPLIT TIMES</Text>
-        {splits.map((s, i) => {
-          const isLast = i === splits.length - 1;
-          return (
-            <View key={`s${s.km}`} style={[styles.splitRow, isLast && styles.splitRowActive]}>
-              <Text style={styles.splitKm}>KM {s.km}</Text>
-              <Text style={[styles.splitPace, isLast && { color: colors.neonYellow }]}>{s.pace}</Text>
-              <Text style={[styles.splitTrend, s.trend.includes("+") && { color: colors.danger }, s.trend.includes("-") && { color: colors.success }]}>{s.trend}</Text>
-            </View>
-          );
-        })}
-      </View>
+      {/* Splits — REAL auto-detected every 1km */}
+      {gpsState.splits.length > 0 && (
+        <View style={styles.splitsSection}>
+          <Text style={styles.splitsTitle}>SPLIT TIMES</Text>
+          {gpsState.splits.map((split, i) => {
+            const isLast = i === gpsState.splits.length - 1;
+            const prevPace = i > 0 ? gpsState.splits[i - 1].paceSecPerKm : null;
+            const diff = prevPace ? split.paceSecPerKm - prevPace : 0;
+            const trendStr = prevPace
+              ? (diff > 0 ? `+${Math.abs(Math.round(diff))}s` : diff < 0 ? `-${Math.abs(Math.round(diff))}s` : "\u2014")
+              : "\u2014";
+
+            return (
+              <View key={`km${split.kmIndex}`} style={[styles.splitRow, isLast && styles.splitRowActive]}>
+                <Text style={styles.splitKm}>KM {split.kmIndex}</Text>
+                <Text style={[styles.splitPace, isLast && { color: colors.neonYellow }]}>
+                  {formatPace(split.paceSecPerKm)}
+                </Text>
+                <Text
+                  style={[
+                    styles.splitTrend,
+                    trendStr.includes("+") && { color: colors.danger },
+                    trendStr.includes("-") && { color: colors.success },
+                  ]}
+                >
+                  {trendStr}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      )}
 
       {/* Controls */}
       <View style={styles.controls}>
-        <TouchableOpacity style={styles.controlBtn} onPress={() => setIsRunning(!isRunning)}>
+        <TouchableOpacity style={styles.controlBtn} onPress={handlePauseResume}>
           <IconPause size={22} color={colors.offWhite} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.stopBtn}>
+        <TouchableOpacity style={styles.stopBtn} onPress={handleStop}>
           <IconStop size={24} color={colors.offWhite} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.controlBtnAccent}>
-          <IconLocation size={20} color={colors.neonYellow} />
-        </TouchableOpacity>
       </View>
-    </View>
+
+      <View style={{ height: 100 }} />
+    </ScrollView>
   );
 };
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.black, paddingHorizontal: spacing.lg },
+  // Idle state
+  idleContent: { flex: 1, justifyContent: "center", alignItems: "center", gap: 24 },
+  idleLabel: { fontFamily: fonts.bodyBold, fontSize: 12, color: colors.ash, letterSpacing: 6 },
+  idleHint: { fontFamily: fonts.body, fontSize: 14, color: colors.ash, textAlign: "center", paddingHorizontal: 40, lineHeight: 22 },
+  startButton: { backgroundColor: colors.neonYellow, paddingVertical: 20, paddingHorizontal: 64, borderRadius: 12 },
+  startButtonText: { fontFamily: fonts.bodyBold, fontSize: 16, color: colors.black, letterSpacing: 4 },
+  savedLabel: { fontFamily: fonts.bodyBold, fontSize: 12, color: colors.success, letterSpacing: 4 },
+  // Active state
   topBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.md },
   row: { flexDirection: "row", alignItems: "center", gap: 6 },
-  gpsLabel: { fontFamily: fonts.bodyBold, fontSize: 10, color: colors.neonYellow, letterSpacing: 3 },
+  gpsLabel: { fontFamily: fonts.bodyBold, fontSize: 10, letterSpacing: 3 },
   recDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.danger },
   recLabel: { fontFamily: fonts.bodyBold, fontSize: 10, color: colors.danger, letterSpacing: 2 },
   distanceBlock: { marginBottom: spacing.sm },
@@ -164,11 +412,13 @@ const styles = StyleSheet.create({
   metricValue: { fontFamily: fonts.mono, fontSize: 20, fontWeight: "700", color: colors.offWhite },
   paceUnit: { fontFamily: fonts.body, fontSize: 11, color: colors.ash },
   mapContainer: { height: 160, borderRadius: 14, backgroundColor: colors.carbon, borderWidth: 1, borderColor: colors.graphite, overflow: "hidden", marginBottom: spacing.sm },
+  mapEmpty: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8 },
+  mapEmptyText: { fontFamily: fonts.bodyMedium, fontSize: 9, color: colors.ash, letterSpacing: 3 },
   metricsGrid: { flexDirection: "row", gap: 8, marginBottom: spacing.sm },
   metricCard: { flex: 1, backgroundColor: colors.carbon, borderRadius: 10, padding: 10, borderWidth: 1, borderColor: colors.graphite, alignItems: "center", gap: 4 },
   metricCardLabel: { fontFamily: fonts.bodyMedium, fontSize: 7, color: colors.ash, letterSpacing: 3 },
   metricCardValue: { fontFamily: fonts.mono, fontSize: 22, fontWeight: "700", color: colors.offWhite },
-  metricCardSub: { fontFamily: fonts.bodyBold, fontSize: 8, letterSpacing: 2 },
+  metricCardSub: { fontFamily: fonts.bodyBold, fontSize: 8, letterSpacing: 2, color: colors.ash },
   splitsSection: { marginBottom: spacing.sm },
   splitsTitle: { fontFamily: fonts.bodyMedium, fontSize: 8, color: colors.ash, letterSpacing: 4, marginBottom: 6 },
   splitRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: colors.graphite, marginBottom: 3 },
@@ -177,7 +427,6 @@ const styles = StyleSheet.create({
   splitPace: { fontFamily: fonts.mono, fontSize: 14, fontWeight: "700", color: colors.offWhite },
   splitTrend: { fontFamily: fonts.mono, fontSize: 11, color: colors.ash, width: 40, textAlign: "right" },
   controls: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 32, paddingBottom: spacing.sm },
-  controlBtn: { width: 50, height: 50, borderRadius: 25, borderWidth: 1.5, borderColor: colors.steel, alignItems: "center", justifyContent: "center" },
-  stopBtn: { width: 64, height: 64, borderRadius: 32, backgroundColor: colors.danger, alignItems: "center", justifyContent: "center" },
-  controlBtnAccent: { width: 50, height: 50, borderRadius: 25, borderWidth: 1.5, borderColor: colors.neonYellow, alignItems: "center", justifyContent: "center" },
+  controlBtn: { width: 56, height: 56, borderRadius: 28, borderWidth: 1.5, borderColor: colors.steel, alignItems: "center", justifyContent: "center" },
+  stopBtn: { width: 72, height: 72, borderRadius: 36, backgroundColor: colors.danger, alignItems: "center", justifyContent: "center" },
 });
