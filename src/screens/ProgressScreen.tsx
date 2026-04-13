@@ -19,8 +19,7 @@ import type { RunSession, WodSession } from "../types/workout";
 
 export const ProgressScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
-  const sessions = useWorkoutHistoryStore((s) => s.sessions);
-  const personalRecords = useWorkoutHistoryStore((s) => s.personalRecords);
+  const { sessions, personalRecords } = useWorkoutHistoryStore();
 
   const completed = useMemo(() => sessions.filter((s) => s.status === "completed"), [sessions]);
   const streak = useMemo(() => getStreak(sessions), [sessions]);

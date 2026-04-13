@@ -44,7 +44,7 @@ export const LiveWorkoutScreen: React.FC = () => {
 
   const timer = useTimer(activeConfig);
   const activeWorkout = useActiveWorkoutStore();
-  const addSession = useWorkoutHistoryStore((s) => s.addSession);
+  const { addSession } = useWorkoutHistoryStore();
 
   const handleStart = useCallback(async (preset: typeof PRESETS[0]) => {
     setActiveConfig(preset.config);

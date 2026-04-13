@@ -27,7 +27,7 @@ export const HyroxScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
   const hyrox = useHyroxSession();
   const activeWorkout = useActiveWorkoutStore();
-  const addSession = useWorkoutHistoryStore((s) => s.addSession);
+  const { addSession } = useWorkoutHistoryStore();
 
   const handleStart = async () => {
     activeWorkout.startWorkout("hyrox");

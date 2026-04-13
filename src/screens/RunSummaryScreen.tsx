@@ -268,7 +268,7 @@ export const RunSummaryScreen: React.FC<RunSummaryScreenProps> = ({
   onDismiss,
 }) => {
   const insets = useSafeAreaInsets();
-  const personalRecords = useWorkoutHistoryStore((s) => s.personalRecords);
+  const { personalRecords } = useWorkoutHistoryStore();
 
   // Computed stats
   const avgSpeed = session.totalDistanceM / (session.totalDurationMs / 1000);

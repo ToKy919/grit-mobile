@@ -9,14 +9,7 @@ import { useRunTrackerStore } from "../stores/useRunTrackerStore";
 
 export function useGpsTracking() {
   const serviceRef = useRef<LocationService>(new LocationService());
-
-  const isTracking = useRunTrackerStore((s) => s.isTracking);
-  const hasPermission = useRunTrackerStore((s) => s.hasPermission);
-  const onLocationUpdate = useRunTrackerStore((s) => s.onLocationUpdate);
-  const setPermission = useRunTrackerStore((s) => s.setPermission);
-  const startTracking = useRunTrackerStore((s) => s.startTracking);
-  const stopTracking = useRunTrackerStore((s) => s.stopTracking);
-  const reset = useRunTrackerStore((s) => s.reset);
+  const store = useRunTrackerStore();
 
   // Cleanup on unmount
   useEffect(() => {
@@ -30,15 +23,15 @@ export function useGpsTracking() {
    */
   const requestPermission = useCallback(async (): Promise<boolean> => {
     const granted = await serviceRef.current.requestPermissions();
-    setPermission(granted);
+    store.setPermission(granted);
     return granted;
-  }, [setPermission]);
+  }, []);
 
   /**
-   * Start GPS tracking — requests permissions if needed, starts location service
+   * Start GPS tracking
    */
   const start = useCallback(async (): Promise<boolean> => {
-    let permission = hasPermission;
+    let permission = useRunTrackerStore.getState().hasPermission;
 
     if (permission === null || permission === false) {
       permission = await requestPermission();
@@ -46,31 +39,29 @@ export function useGpsTracking() {
 
     if (!permission) return false;
 
-    // Reset store state for new run
-    startTracking();
+    store.startTracking();
 
-    // Start GPS service
     await serviceRef.current.start((coords) => {
-      onLocationUpdate(coords);
+      useRunTrackerStore.getState().onLocationUpdate(coords);
     });
 
     return true;
-  }, [hasPermission, requestPermission, startTracking, onLocationUpdate]);
+  }, [requestPermission]);
 
   /**
    * Stop GPS tracking
    */
   const stop = useCallback(() => {
     serviceRef.current.stop();
-    stopTracking();
-  }, [stopTracking]);
+    store.stopTracking();
+  }, []);
 
   return {
-    isTracking,
-    hasPermission,
+    isTracking: store.isTracking,
+    hasPermission: store.hasPermission,
     start,
     stop,
-    reset,
+    reset: store.reset,
     requestPermission,
   };
 }

@@ -33,9 +33,9 @@ const SESSIONS_ROTATION = [
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({ onStartSession }) => {
   const insets = useSafeAreaInsets();
-  const sessions = useWorkoutHistoryStore((s) => s.sessions);
+  const { sessions } = useWorkoutHistoryStore();
 
-  const completed = sessions.filter((s) => s.status === "completed");
+  const completed = useMemo(() => sessions.filter((s) => s.status === "completed"), [sessions]);
   const streak = useMemo(() => getStreak(sessions), [sessions]);
   const lastSession = completed[0];
   const lastRun = completed.find((s) => s.type === "run") as RunSession | undefined;

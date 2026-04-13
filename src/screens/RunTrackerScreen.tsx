@@ -6,7 +6,7 @@
  * NO mock data. NO default values.
  */
 
-import React, { useEffect, useCallback, useState } from "react";
+import React, { useEffect, useCallback, useState, useMemo } from "react";
 import { View, Text, TouchableOpacity, ScrollView, Alert, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
@@ -48,7 +48,7 @@ export const RunTrackerScreen: React.FC = () => {
 
   // Workout session
   const activeWorkout = useActiveWorkoutStore();
-  const addSession = useWorkoutHistoryStore((s) => s.addSession);
+  const { addSession } = useWorkoutHistoryStore();
 
   // Environment (air quality + pollen)
   const env = useEnvironment();
@@ -221,7 +221,8 @@ export const RunTrackerScreen: React.FC = () => {
   }[gpsState.signalQuality];
 
   // ─── Idle State — Map preview + position + history ─
-  const historyRuns = useWorkoutHistoryStore((s) => s.sessions.filter((ss) => ss.type === "run" && ss.status === "completed")) as RunSession[];
+  const { sessions: allSessions } = useWorkoutHistoryStore();
+  const historyRuns = useMemo(() => allSessions.filter((ss) => ss.type === "run" && ss.status === "completed") as RunSession[], [allSessions]);
   const [showHistory, setShowHistory] = useState(false);
 
   if (phase === "idle") {
