@@ -26,8 +26,9 @@ import { colors, fonts, spacing } from "../design/tokens";
 import { RunMap } from "../components/RunMap";
 import {
   IconPace, IconElevation, IconTimer, IconArrowRight,
-  IconShare, IconStats, IconStar, IconFire, IconLocation,
+  IconShare, IconStats, IconStar, IconFire, IconLocation, IconStudio,
 } from "../components/Icons";
+import { useVideoRender } from "../hooks/useVideoRender";
 import {
   formatTime, formatPace, formatDistance, formatDistanceUnit,
   formatElevation, formatSpeed,
@@ -269,6 +270,11 @@ export const RunSummaryScreen: React.FC<RunSummaryScreenProps> = ({
 }) => {
   const insets = useSafeAreaInsets();
   const { personalRecords } = useWorkoutHistoryStore();
+  const videoRender = useVideoRender();
+
+  const sessionPRLabels = personalRecords
+    .filter((pr) => pr.sessionId === session.id)
+    .map((pr) => pr.category);
 
   // Computed stats
   const avgSpeed = session.totalDistanceM / (session.totalDurationMs / 1000);
@@ -424,16 +430,56 @@ export const RunSummaryScreen: React.FC<RunSummaryScreenProps> = ({
 
           {/* ─── Actions ─── */}
           <FadeIn delay={1000}>
-            <View style={styles.actions}>
-              <TouchableOpacity style={styles.shareBtn} activeOpacity={0.7}>
-                <IconShare size={18} color={colors.silver} />
-                <Text style={styles.shareBtnText}>PARTAGER</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.doneBtn} onPress={onDismiss} activeOpacity={0.85}>
-                <Text style={styles.doneBtnText}>TERMINÉ</Text>
-                <IconArrowRight size={14} color={colors.black} strokeWidth={2.5} />
-              </TouchableOpacity>
-            </View>
+            {/* Video Render / Share */}
+            {videoRender.state === "idle" && (
+              <View style={styles.actions}>
+                <TouchableOpacity
+                  style={styles.highlightBtn}
+                  onPress={() => videoRender.render(session, "highlight", sessionPRLabels)}
+                  activeOpacity={0.7}
+                >
+                  <IconStudio size={16} color={colors.neonYellow} />
+                  <Text style={styles.highlightBtnText}>HIGHLIGHT</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.doneBtn} onPress={onDismiss} activeOpacity={0.85}>
+                  <Text style={styles.doneBtnText}>TERMINÉ</Text>
+                  <IconArrowRight size={14} color={colors.black} strokeWidth={2.5} />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {videoRender.state === "rendering" && (
+              <View style={styles.renderProgress}>
+                <Text style={styles.renderLabel}>GENERATING HIGHLIGHT...</Text>
+                <View style={styles.progressTrack}>
+                  <View style={[styles.progressFill, { width: `${videoRender.progress}%` }]} />
+                </View>
+                <Text style={styles.renderPercent}>{videoRender.progress}%</Text>
+              </View>
+            )}
+
+            {videoRender.state === "done" && (
+              <View style={styles.actions}>
+                <TouchableOpacity style={styles.shareBtn} onPress={videoRender.share} activeOpacity={0.7}>
+                  <IconShare size={18} color={colors.neonYellow} />
+                  <Text style={[styles.shareBtnText, { color: colors.neonYellow }]}>SHARE VIDEO</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.doneBtn} onPress={onDismiss} activeOpacity={0.85}>
+                  <Text style={styles.doneBtnText}>TERMINÉ</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {videoRender.state === "error" && (
+              <View style={styles.actions}>
+                <Text style={{ color: colors.danger, fontFamily: fonts.body, fontSize: 12 }}>
+                  {videoRender.error}
+                </Text>
+                <TouchableOpacity style={styles.doneBtn} onPress={onDismiss} activeOpacity={0.85}>
+                  <Text style={styles.doneBtnText}>TERMINÉ</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </FadeIn>
 
           <View style={{ height: 100 }} />
@@ -527,12 +573,23 @@ const styles = StyleSheet.create({
 
   // Actions
   actions: { flexDirection: "row", gap: spacing.sm, marginBottom: spacing.lg },
+  highlightBtn: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    paddingVertical: 16, paddingHorizontal: 20,
+    borderRadius: 10, borderWidth: 1, borderColor: colors.neonYellow, backgroundColor: "rgba(239,255,0,0.06)",
+  },
+  highlightBtnText: { fontFamily: fonts.bodyBold, fontSize: 12, color: colors.neonYellow, letterSpacing: 3 },
   shareBtn: {
     flexDirection: "row", alignItems: "center", gap: 8,
     paddingVertical: 16, paddingHorizontal: 24,
-    borderRadius: 10, borderWidth: 1, borderColor: colors.graphite, backgroundColor: colors.carbon,
+    borderRadius: 10, borderWidth: 1, borderColor: colors.neonYellow, backgroundColor: "rgba(239,255,0,0.06)",
   },
   shareBtnText: { fontFamily: fonts.bodyBold, fontSize: 12, color: colors.silver, letterSpacing: 3 },
+  renderProgress: { alignItems: "center", gap: 12, paddingVertical: 20 },
+  renderLabel: { fontFamily: fonts.bodyBold, fontSize: 11, color: colors.neonYellow, letterSpacing: 4 },
+  progressTrack: { width: "100%", height: 4, backgroundColor: colors.graphite, borderRadius: 2 },
+  progressFill: { height: "100%", backgroundColor: colors.neonYellow, borderRadius: 2 },
+  renderPercent: { fontFamily: fonts.mono, fontSize: 14, fontWeight: "700", color: colors.offWhite },
   doneBtn: {
     flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
     backgroundColor: colors.neonYellow, paddingVertical: 16, borderRadius: 10,
