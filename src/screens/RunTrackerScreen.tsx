@@ -21,12 +21,18 @@ import { useTimer } from "../hooks/useTimer";
 import { formatTime, formatPace, formatDistance, formatDistanceUnit, formatElevation, formatSpeed } from "../utils/formatters";
 import type { RunSession } from "../types/workout";
 import { hapticService } from "../services/haptics/hapticService";
+import { useEnvironment } from "../hooks/useEnvironment";
+import { EnvironmentBanner } from "../components/EnvironmentBanner";
+import { snapToRoads } from "../services/google/roadsService";
+import { getElevations } from "../services/google/elevationService";
+import { getLocationName } from "../services/google/geocodingService";
 
 type RunPhase = "idle" | "running" | "paused" | "finished";
 
 export const RunTrackerScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
   const [phase, setPhase] = useState<RunPhase>("idle");
+  const [envExpanded, setEnvExpanded] = useState(false);
 
   // GPS
   const gps = useGpsTracking();
@@ -38,6 +44,9 @@ export const RunTrackerScreen: React.FC = () => {
   // Workout session
   const activeWorkout = useActiveWorkoutStore();
   const addSession = useWorkoutHistoryStore((s) => s.addSession);
+
+  // Environment (air quality + pollen)
+  const env = useEnvironment();
 
   // ─── Start Run ──────────────────────────────────
   const handleStart = useCallback(async () => {
@@ -56,7 +65,16 @@ export const RunTrackerScreen: React.FC = () => {
     await activateKeepAwakeAsync();
     hapticService.medium();
     setPhase("running");
-  }, [gps, activeWorkout, timer]);
+
+    // Start environment monitoring (air quality + pollen) in background
+    // Use a small delay to get first GPS fix
+    setTimeout(async () => {
+      const state = useRunTrackerStore.getState();
+      if (state.currentPoint) {
+        env.startMonitoring(state.currentPoint.latitude, state.currentPoint.longitude);
+      }
+    }, 5000);
+  }, [gps, activeWorkout, timer, env]);
 
   // ─── Pause / Resume ─────────────────────────────
   const handlePauseResume = useCallback(() => {
@@ -83,10 +101,49 @@ export const RunTrackerScreen: React.FC = () => {
         {
           text: "Save & End",
           style: "destructive",
-          onPress: () => {
+          onPress: async () => {
             const elapsedMs = timer.stop();
             gps.stop();
+            env.stopMonitoring();
             deactivateKeepAwake();
+
+            // Post-process: snap to roads + correct elevations (async, best-effort)
+            let finalPoints = gpsState.trackPoints;
+            let finalElevation = gpsState.elevationGainM;
+
+            try {
+              // Snap GPS points to nearest roads for accuracy
+              const snapped = await snapToRoads(finalPoints);
+              if (snapped.length > 0) finalPoints = snapped;
+
+              // Get precise elevation data from Google
+              const elevated = await getElevations(finalPoints);
+              if (elevated.length > 0) {
+                finalPoints = elevated;
+                // Recalculate elevation gain with corrected data
+                let gain = 0;
+                let prevAlt: number | null = null;
+                for (const p of elevated) {
+                  if (p.altitude !== null && prevAlt !== null && p.altitude - prevAlt > 0.5) {
+                    gain += p.altitude - prevAlt;
+                  }
+                  if (p.altitude !== null) prevAlt = p.altitude;
+                }
+                finalElevation = gain;
+              }
+            } catch (e) {
+              // Best-effort — use original data if APIs fail
+              console.warn("[RunTracker] Post-processing failed:", e);
+            }
+
+            // Get location name for session
+            let locationName: string | undefined;
+            try {
+              if (finalPoints.length > 0) {
+                const loc = await getLocationName(finalPoints[0].latitude, finalPoints[0].longitude);
+                if (loc) locationName = `${loc.shortName}, ${loc.city}`;
+              }
+            } catch {}
 
             // Build RunSession
             const session = activeWorkout.completeWorkout();
@@ -95,11 +152,12 @@ export const RunTrackerScreen: React.FC = () => {
                 ...session,
                 type: "run",
                 totalDurationMs: elapsedMs,
-                trackPoints: gpsState.trackPoints,
+                trackPoints: finalPoints,
                 splits: gpsState.splits,
                 totalDistanceM: gpsState.totalDistanceM,
-                elevationGainM: gpsState.elevationGainM,
+                elevationGainM: finalElevation,
                 avgPaceSecPerKm: gpsState.avgPaceSecPerKm,
+                notes: locationName,
               };
               addSession(runSession);
             }
@@ -108,7 +166,6 @@ export const RunTrackerScreen: React.FC = () => {
             gps.reset();
             setPhase("finished");
 
-            // Reset to idle after brief delay
             setTimeout(() => setPhase("idle"), 2000);
           },
         },
@@ -266,6 +323,15 @@ export const RunTrackerScreen: React.FC = () => {
           <Text style={[styles.recLabel, { color: colors.warning }]}>PAUSED</Text>
         )}
       </View>
+
+      {/* Environment Banner — Air Quality + Pollen (real data from Google) */}
+      <EnvironmentBanner
+        airQuality={env.airQuality}
+        pollen={env.pollen}
+        warning={env.warning}
+        expanded={envExpanded}
+        onToggle={() => setEnvExpanded(!envExpanded)}
+      />
 
       {/* Distance — REAL from GPS */}
       <View style={styles.distanceBlock}>
