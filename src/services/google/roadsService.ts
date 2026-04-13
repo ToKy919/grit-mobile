@@ -50,9 +50,12 @@ export async function snapToRoads(
 
       const response = await fetch(url);
       if (!response.ok) {
-        console.warn("[Roads] API error:", response.status);
-        snappedAll.push(...batch); // fallback to original
-        continue;
+        if (response.status === 403) {
+          console.info("[Roads] API not enabled. Enable 'Roads API' at https://console.cloud.google.com/apis/library/roads.googleapis.com — using raw GPS data instead");
+        } else {
+          console.warn("[Roads] API error:", response.status);
+        }
+        return points; // fallback to original — don't try remaining batches
       }
 
       const data: SnapToRoadsResponse = await response.json();

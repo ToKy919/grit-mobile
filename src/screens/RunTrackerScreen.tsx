@@ -10,9 +10,9 @@ import React, { useEffect, useCallback, useState } from "react";
 import { View, Text, TouchableOpacity, ScrollView, Alert, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
-import Svg, { Polyline, Circle, Line, G, Text as SvgText } from "react-native-svg";
 import { colors, fonts, spacing } from "../design/tokens";
 import { IconLocation, IconPace, IconElevation, IconTimer, IconPause, IconStop } from "../components/Icons";
+import { RunMap } from "../components/RunMap";
 import { useGpsTracking } from "../hooks/useGpsTracking";
 import { useRunTrackerStore } from "../stores/useRunTrackerStore";
 import { useActiveWorkoutStore } from "../stores/useActiveWorkoutStore";
@@ -26,13 +26,15 @@ import { EnvironmentBanner } from "../components/EnvironmentBanner";
 import { snapToRoads } from "../services/google/roadsService";
 import { getElevations } from "../services/google/elevationService";
 import { getLocationName } from "../services/google/geocodingService";
+import { RunSummaryScreen } from "./RunSummaryScreen";
 
-type RunPhase = "idle" | "running" | "paused" | "finished";
+type RunPhase = "idle" | "running" | "paused" | "summary";
 
 export const RunTrackerScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
   const [phase, setPhase] = useState<RunPhase>("idle");
   const [envExpanded, setEnvExpanded] = useState(false);
+  const [completedSession, setCompletedSession] = useState<RunSession | null>(null);
 
   // GPS
   const gps = useGpsTracking();
@@ -147,8 +149,10 @@ export const RunTrackerScreen: React.FC = () => {
 
             // Build RunSession
             const session = activeWorkout.completeWorkout();
+            let finalRunSession: RunSession | null = null;
+
             if (session) {
-              const runSession: RunSession = {
+              finalRunSession = {
                 ...session,
                 type: "run",
                 totalDurationMs: elapsedMs,
@@ -159,14 +163,19 @@ export const RunTrackerScreen: React.FC = () => {
                 avgPaceSecPerKm: gpsState.avgPaceSecPerKm,
                 notes: locationName,
               };
-              addSession(runSession);
+              addSession(finalRunSession);
             }
 
             hapticService.workoutFinished();
             gps.reset();
-            setPhase("finished");
 
-            setTimeout(() => setPhase("idle"), 2000);
+            // Show summary screen with animated stats
+            if (finalRunSession) {
+              setCompletedSession(finalRunSession);
+              setPhase("summary");
+            } else {
+              setPhase("idle");
+            }
           },
         },
       ]
@@ -180,89 +189,18 @@ export const RunTrackerScreen: React.FC = () => {
     }
   }, [timer.display.totalElapsedMs]);
 
-  // ─── Map Rendering ──────────────────────────────
-  const renderMap = () => {
-    const points = gpsState.trackPoints;
-    if (points.length < 2) {
-      return (
-        <View style={styles.mapEmpty}>
-          <IconLocation size={24} color={colors.ash} />
-          <Text style={styles.mapEmptyText}>
-            {phase === "idle" ? "START A RUN TO SEE YOUR ROUTE" : "ACQUIRING GPS..."}
-          </Text>
-        </View>
-      );
-    }
-
-    // Transform GPS coords to SVG viewbox
-    const lats = points.map((p) => p.latitude);
-    const lons = points.map((p) => p.longitude);
-    const minLat = Math.min(...lats);
-    const maxLat = Math.max(...lats);
-    const minLon = Math.min(...lons);
-    const maxLon = Math.max(...lons);
-
-    const padding = 20;
-    const svgW = 345;
-    const svgH = 160;
-    const rangeX = maxLon - minLon || 0.001;
-    const rangeY = maxLat - minLat || 0.001;
-
-    const toSvgX = (lon: number) => padding + ((lon - minLon) / rangeX) * (svgW - padding * 2);
-    const toSvgY = (lat: number) => svgH - padding - ((lat - minLat) / rangeY) * (svgH - padding * 2);
-
-    const polylinePoints = points.map((p) => `${toSvgX(p.longitude)},${toSvgY(p.latitude)}`).join(" ");
-    const lastPoint = points[points.length - 1];
-    const firstPoint = points[0];
-
+  // ─── Summary Screen ─────────────────────────────
+  if (phase === "summary" && completedSession) {
     return (
-      <Svg width="100%" height="100%" viewBox={`0 0 ${svgW} ${svgH}`}>
-        {/* Grid */}
-        {[0, 40, 80, 120, 160].map((y) => (
-          <Line key={`h${y}`} x1={0} y1={y} x2={svgW} y2={y} stroke={colors.graphite} strokeWidth={0.5} opacity={0.3} />
-        ))}
-
-        {/* Route */}
-        <Polyline
-          points={polylinePoints}
-          fill="none"
-          stroke={colors.neonYellow}
-          strokeWidth={2.5}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-
-        {/* Start marker */}
-        <Circle cx={toSvgX(firstPoint.longitude)} cy={toSvgY(firstPoint.latitude)} r={4} fill="none" stroke={colors.offWhite} strokeWidth={1.5} />
-        <Circle cx={toSvgX(firstPoint.longitude)} cy={toSvgY(firstPoint.latitude)} r={1.5} fill={colors.offWhite} />
-
-        {/* Current position */}
-        <Circle cx={toSvgX(lastPoint.longitude)} cy={toSvgY(lastPoint.latitude)} r={6} fill={colors.neonYellow} />
-        <Circle cx={toSvgX(lastPoint.longitude)} cy={toSvgY(lastPoint.latitude)} r={10} fill="none" stroke={colors.neonYellow} strokeWidth={1.5} opacity={0.4} />
-
-        {/* Km markers from splits */}
-        {gpsState.splits.map((split) => {
-          const splitPoint = points.find((p) => p.timestamp >= split.endTimestamp);
-          if (!splitPoint) return null;
-          return (
-            <G key={`km${split.kmIndex}`}>
-              <Circle cx={toSvgX(splitPoint.longitude)} cy={toSvgY(splitPoint.latitude)} r={8} fill={colors.carbon} stroke={colors.steel} strokeWidth={1} />
-              <SvgText
-                x={toSvgX(splitPoint.longitude)}
-                y={toSvgY(splitPoint.latitude) + 3.5}
-                textAnchor="middle"
-                fill={colors.offWhite}
-                fontSize={8}
-                fontWeight="600"
-              >
-                {split.kmIndex}
-              </SvgText>
-            </G>
-          );
-        })}
-      </Svg>
+      <RunSummaryScreen
+        session={completedSession}
+        onDismiss={() => {
+          setCompletedSession(null);
+          setPhase("idle");
+        }}
+      />
     );
-  };
+  }
 
   // ─── Signal Quality Label ──────────────────────
   const signalLabel = {
@@ -280,7 +218,7 @@ export const RunTrackerScreen: React.FC = () => {
   }[gpsState.signalQuality];
 
   // ─── Idle State (before start) ─────────────────
-  if (phase === "idle" || phase === "finished") {
+  if (phase === "idle") {
     return (
       <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
         <View style={styles.idleContent}>
@@ -291,10 +229,6 @@ export const RunTrackerScreen: React.FC = () => {
           <TouchableOpacity style={styles.startButton} activeOpacity={0.85} onPress={handleStart}>
             <Text style={styles.startButtonText}>START RUN</Text>
           </TouchableOpacity>
-
-          {phase === "finished" && (
-            <Text style={styles.savedLabel}>RUN SAVED</Text>
-          )}
         </View>
       </View>
     );
@@ -367,9 +301,14 @@ export const RunTrackerScreen: React.FC = () => {
         </View>
       </View>
 
-      {/* GPS Map — REAL track points */}
-      <View style={styles.mapContainer}>
-        {renderMap()}
+      {/* GPS Map — Real Google Maps or SVG fallback */}
+      <View style={{ marginBottom: spacing.sm }}>
+        <RunMap
+          trackPoints={gpsState.trackPoints}
+          splits={gpsState.splits}
+          isLive={true}
+          height={180}
+        />
       </View>
 
       {/* Metrics — REAL data only (no BPM without HR sensor) */}
@@ -462,7 +401,6 @@ const styles = StyleSheet.create({
   idleHint: { fontFamily: fonts.body, fontSize: 14, color: colors.ash, textAlign: "center", paddingHorizontal: 40, lineHeight: 22 },
   startButton: { backgroundColor: colors.neonYellow, paddingVertical: 20, paddingHorizontal: 64, borderRadius: 12 },
   startButtonText: { fontFamily: fonts.bodyBold, fontSize: 16, color: colors.black, letterSpacing: 4 },
-  savedLabel: { fontFamily: fonts.bodyBold, fontSize: 12, color: colors.success, letterSpacing: 4 },
   // Active state
   topBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.md },
   row: { flexDirection: "row", alignItems: "center", gap: 6 },
@@ -477,9 +415,6 @@ const styles = StyleSheet.create({
   metricLabel: { fontFamily: fonts.bodyMedium, fontSize: 9, color: colors.ash, letterSpacing: 4 },
   metricValue: { fontFamily: fonts.mono, fontSize: 20, fontWeight: "700", color: colors.offWhite },
   paceUnit: { fontFamily: fonts.body, fontSize: 11, color: colors.ash },
-  mapContainer: { height: 160, borderRadius: 14, backgroundColor: colors.carbon, borderWidth: 1, borderColor: colors.graphite, overflow: "hidden", marginBottom: spacing.sm },
-  mapEmpty: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8 },
-  mapEmptyText: { fontFamily: fonts.bodyMedium, fontSize: 9, color: colors.ash, letterSpacing: 3 },
   metricsGrid: { flexDirection: "row", gap: 8, marginBottom: spacing.sm },
   metricCard: { flex: 1, backgroundColor: colors.carbon, borderRadius: 10, padding: 10, borderWidth: 1, borderColor: colors.graphite, alignItems: "center", gap: 4 },
   metricCardLabel: { fontFamily: fonts.bodyMedium, fontSize: 7, color: colors.ash, letterSpacing: 3 },

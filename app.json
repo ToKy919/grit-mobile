@@ -15,7 +15,14 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.grit.app"
+      "bundleIdentifier": "com.grit.app",
+      "config": {
+        "googleMapsApiKey": "AIzaSyCyh-bLFvXAQ-A_iRnlaGd5wltd_uocDZ4"
+      },
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "GRIT needs your location to track runs with GPS precision.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "GRIT needs background location to track your run even when the app is in the background."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -23,10 +30,28 @@
         "backgroundColor": "#0A0A0A"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.grit.app"
+      "package": "com.grit.app",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyCyh-bLFvXAQ-A_iRnlaGd5wltd_uocDZ4"
+        }
+      },
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "FOREGROUND_SERVICE"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "GRIT needs your location to track runs."
+        }
+      ]
+    ]
   }
 }

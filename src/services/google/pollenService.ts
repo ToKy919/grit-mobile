@@ -51,7 +51,9 @@ export async function getPollenData(
     const response = await fetch(url);
 
     if (!response.ok) {
-      console.warn("[Pollen] API error:", response.status);
+      if (response.status === 403) {
+        console.info("[Pollen] API not enabled. Enable 'Pollen API' at https://console.cloud.google.com/apis/library/pollen.googleapis.com");
+      }
       return null;
     }
 

@@ -50,7 +50,9 @@ export async function getAirQuality(
     });
 
     if (!response.ok) {
-      console.warn("[AirQuality] API error:", response.status);
+      if (response.status === 403) {
+        console.info("[AirQuality] API not enabled. Enable 'Air Quality API' at https://console.cloud.google.com/apis/library/airquality.googleapis.com");
+      }
       return null;
     }
 
