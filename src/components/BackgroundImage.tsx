@@ -13,14 +13,11 @@ import { colors } from "../design/tokens";
 
 // Image map — require() must be static in React Native
 const IMAGES: Record<string, ImageSourcePropType> = {
-  // These will work once you place the images in assets/images/
-  // Uncomment the lines below after adding your photos:
-  //
-  // runner: require("../../assets/images/runner-road.jpg"),
-  // silhouette: require("../../assets/images/runner-silhouette.jpg"),
-  // crossfit: require("../../assets/images/gym-crossfit.jpg"),
-  // boxing: require("../../assets/images/boxing-ring.jpg"),
-  // bike: require("../../assets/images/athlete-bike.jpg"),
+  runner: require("../../assets/runner-dark.jpg"),
+  silhouette: require("../../assets/runner-silhouette.jpg"),
+  crossfit: require("../../assets/gym-industrial.jpg"),
+  boxing: require("../../assets/boxing-gym.jpg"),
+  bike: require("../../assets/athlete-bike.jpg"),
 };
 
 interface BackgroundImageProps {
